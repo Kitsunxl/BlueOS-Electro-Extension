@@ -34,9 +34,6 @@
                     "source": "https://github.com/sun-xinshuai/BlueOS-Electro-Extension"
                 },
                 "tag": "v1.0.0",
-                "docs": null,
-                "readme": "<h1>Simple Electro Extension</h1>\n<p>This is my custom extension for handling electrochemical data.</p>", // 编写您自己的文档
-                "support": null,
                 "requirements": "core >= 1.1",
                 "company": { 
                     "about": "",
