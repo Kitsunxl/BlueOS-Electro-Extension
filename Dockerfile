@@ -2,7 +2,8 @@ from python:3.9-slim-bullseye
 
 COPY install.sh /install.sh
 
-RUN /install.sh
+RUN chmod +x /install.sh && \
+    /install.sh
 
 COPY app /app
 RUN python /app/setup.py install
