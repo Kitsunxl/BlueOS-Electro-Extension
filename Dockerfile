@@ -1,6 +1,7 @@
 FROM python:3.9-slim-bullseye
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get install -y \
+    build-essential \
     gcc \
     g++ \
     make \
