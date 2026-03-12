@@ -1,8 +1,10 @@
 FROM python:3.9-slim-bullseye
 
-# 不再需要 gcc，所有依赖都是纯 Python wheel
+# 用 pip + requirements.txt 安装，精确控制依赖，避免 setup.py 乱拉 ujson 等 C 扩展
+COPY app/requirements.txt /requirements.txt
+RUN pip install --no-cache-dir -r /requirements.txt
+
 COPY app /app
-RUN python /app/setup.py install
 
 EXPOSE 80/tcp
 
