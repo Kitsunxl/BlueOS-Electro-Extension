@@ -51,4 +51,4 @@ LABEL links='{\
     }'
 LABEL requirements="core >= 1.1"
 
-ENTRYPOINT /home/pi/serial-reader/main.py
+RUN cd /home/pi/serial-reader && pip3 install . && chmod +x main.py
