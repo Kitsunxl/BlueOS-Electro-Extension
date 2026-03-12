@@ -11,15 +11,15 @@ LABEL version="1.0.0"
 LABEL permissions='\
 {\
   "ExposedPorts": {\
-    "9000/tcp": {}\
+    "9001/tcp": {}\
   },\
   "HostConfig": {\
-    "Binds": ["/dev:/dev"],\
+    "Binds":["/root/.config:/root/.config"],\
     "ExtraHosts": [\
       "host.docker.internal:host-gateway"\
     ],\
     "PortBindings": {\
-      "9000/tcp": [\
+      "9001/tcp": [\
         {\
           "HostPort": ""\
         }\
@@ -51,4 +51,4 @@ LABEL links='{\
     }'
 LABEL requirements="core >= 1.1"
 
-RUN cd /home/pi/serial-reader && pip3 install . && chmod +x main.py
+ENTRYPOINT /home/pi/serial-reader/main.py

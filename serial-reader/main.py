@@ -81,4 +81,4 @@ if __name__ == "__main__":
         return json.dumps(api.list_ports())
 
     driver.start()
-    app.run(host="0.0.0.0", port=9000)
+    app.run(host="0.0.0.0", port=9001)
