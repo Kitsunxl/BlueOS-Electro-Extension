@@ -14,7 +14,6 @@ LABEL permissions='\
     "9000/tcp": {}\
   },\
   "HostConfig": {\
-    "Privileged": true,\
     "Binds": ["/dev:/dev"],\
     "ExtraHosts": [\
       "host.docker.internal:host-gateway"\
