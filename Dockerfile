@@ -5,7 +5,7 @@ RUN mkdir -p /home/pi
 
 # Install serial reader service
 COPY serial-reader /home/pi/serial-reader
-RUN cd /home/pi/serial-reader && pip3 install . chmod +x main.py
+RUN cd /home/pi/serial-reader && pip3 install . && chmod +x main.py
 
 LABEL version="1.0.0"
 LABEL permissions='\
