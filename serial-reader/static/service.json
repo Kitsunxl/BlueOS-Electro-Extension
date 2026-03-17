@@ -5,5 +5,5 @@
     "company": "Your Company",
     "version": "1.0.0",
     "webpage": "/",
-    "api": "/get_status"
+    "api": ""
 }
