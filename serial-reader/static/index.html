@@ -233,8 +233,8 @@ new Vue({
                     const newLines = d.history.slice(this.lines.length)
                     this.lines.push(...newLines)
                     // 超出上限则裁剪
-                    if (this.lines.length > 500) {
-                        this.lines = this.lines.slice(-500)
+                    if (this.lines.length > 50000) {
+                        this.lines = this.lines.slice(-50000)
                     }
 
                     // 同步配置选择框
