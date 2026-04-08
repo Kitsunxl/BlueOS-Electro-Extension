@@ -255,8 +255,8 @@ new Vue({
 
                     this.lines.push(...newLines)
 
-                    if (this.lines.length > 50000) {
-                        this.lines = this.lines.slice(-50000)
+                    if (this.lines.length > 8000) {
+                        this.lines = this.lines.slice(-8000)
                     }
 
                     this.lastIndex = this.lines[this.lines.length - 1].index
