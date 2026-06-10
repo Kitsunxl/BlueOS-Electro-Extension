@@ -5,6 +5,7 @@ BlueOS Serial Reader Extension — 带 IMU 航位推算
 
 import json
 import math
+import os
 import time
 import threading
 from collections import deque
@@ -15,7 +16,12 @@ from blueoshelper import request as blueos_request
 app = Flask(__name__, static_url_path="/static", static_folder="static")
 
 # ── 常量 ────────────────────────────────────────────────────────────────────
-MAVLINK_BASE   = "http://127.0.0.1:6040/v1/mavlink/vehicles/1/components/1/messages"
+MAVLINK_PATH   = "/v1/mavlink/vehicles/1/components/1/messages"
+MAVLINK_HOSTS  = [
+    os.environ.get("MAVLINK2REST_HOST", "host.docker.internal:6040"),
+    "127.0.0.1:6040",
+]
+MAVLINK_BASES  = [f"http://{host}{MAVLINK_PATH}" for host in dict.fromkeys(MAVLINK_HOSTS) if host]
 MAX_TRACK_PTS  = 8000
 DR_HZ          = 10          # 航位推算频率 Hz
 ACCEL_DEADBAND = 0.05        # m/s²，低于此值视为静止噪声归零
@@ -29,6 +35,10 @@ _telem_lock         = threading.Lock()
 
 _track: deque       = deque(maxlen=MAX_TRACK_PTS)
 _track_lock         = threading.Lock()
+
+_mav_status: dict   = {}
+_mav_status_lock    = threading.Lock()
+_active_mavlink_base = MAVLINK_BASES[0] if MAVLINK_BASES else ""
 
 # 航位推算状态（后台线程独占写，REST 只读快照）
 _dr_state: dict     = {
@@ -45,13 +55,59 @@ _dr_reset_flag      = threading.Event()       # 外部触发重置
 # ── MAVLink 拉取 ─────────────────────────────────────────────────────────────
 
 def _fetch(msg: str):
-    try:
-        raw = blueos_request(f"{MAVLINK_BASE}/{msg}")
-        if raw is None:
-            return None
-        return json.loads(raw).get("message", {})
-    except Exception:
-        return None
+    global _active_mavlink_base
+    last_error = "no MAVLink2REST base URL configured"
+    last_base = ""
+    for base in MAVLINK_BASES:
+        last_base = base
+        try:
+            raw = blueos_request(f"{base}/{msg}")
+            if raw is None:
+                last_error = "empty response or request failed"
+                continue
+            message = json.loads(raw).get("message", {})
+            if not message:
+                last_error = "message field missing or empty"
+                continue
+            _active_mavlink_base = base
+            with _mav_status_lock:
+                _mav_status[msg] = {
+                    "ok": True,
+                    "base": base,
+                    "last_attempt": round(time.time(), 3),
+                    "error": None,
+                }
+            return message
+        except Exception as error:
+            last_error = str(error)
+
+    with _mav_status_lock:
+        _mav_status[msg] = {
+            "ok": False,
+            "base": last_base,
+            "last_attempt": round(time.time(), 3),
+            "error": last_error,
+        }
+    return None
+
+
+def _fetch_imu():
+    for msg in ("SCALED_IMU2", "SCALED_IMU", "RAW_IMU"):
+        imu = _fetch(msg)
+        if imu:
+            return msg, imu
+    return None, None
+
+
+def _imu_accel_scale(_msg: str):
+    # SCALED_IMU/RAW_IMU acceleration fields are in milli-g.
+    return G / 1000.0
+
+
+def _imu_gyro_scale(_msg: str):
+    # SCALED_IMU/RAW_IMU gyro fields are in millirad/s.
+    return 0.001
+
 
 # ── 旋转矩阵：机体 → 世界（NED） ────────────────────────────────────────────
 
@@ -98,13 +154,20 @@ def _dr_loop():
         t0 = time.time()
 
         # ── 拉取 IMU + 姿态 ───────────────────────────────────────────────
-        imu      = _fetch("SCALED_IMU2") or _fetch("RAW_IMU")
+        imu_msg, imu = _fetch_imu()
         attitude = _fetch("ATTITUDE")
         ahrs2    = _fetch("AHRS2")
         ekf      = _fetch("EKF_STATUS_REPORT")
 
         # ── 更新遥测快照 ──────────────────────────────────────────────────
         telem_update = {"ts": time.time()}
+        with _mav_status_lock:
+            status_snapshot = dict(_mav_status)
+        telem_update["mavlink_base"] = _active_mavlink_base
+        telem_update["mavlink_status"] = status_snapshot
+        telem_update["imu_message"] = imu_msg if imu else None
+        telem_update["imu_ok"] = bool(imu)
+        telem_update["attitude_ok"] = bool(attitude)
         if attitude:
             telem_update["roll"]  = round(attitude.get("roll",  0), 5)
             telem_update["pitch"] = round(attitude.get("pitch", 0), 5)
@@ -121,20 +184,21 @@ def _dr_loop():
         if imu:
             # SCALED_IMU2: xacc/yacc/zacc 单位 mG，换算 m/s²
             # RAW_IMU:      同上（ArduSub 统一用 mG）
-            scale = 9.80665 / 1000.0
+            scale = _imu_accel_scale(imu_msg)
             telem_update["ax_raw"] = round(imu.get("xacc", 0) * scale, 4)
             telem_update["ay_raw"] = round(imu.get("yacc", 0) * scale, 4)
             telem_update["az_raw"] = round(imu.get("zacc", 0) * scale, 4)
-            telem_update["gx_raw"] = round(imu.get("xgyro", 0) * 0.001, 5)  # mrad/s → rad/s
-            telem_update["gy_raw"] = round(imu.get("ygyro", 0) * 0.001, 5)
-            telem_update["gz_raw"] = round(imu.get("zgyro", 0) * 0.001, 5)
+            gyro_scale = _imu_gyro_scale(imu_msg)
+            telem_update["gx_raw"] = round(imu.get("xgyro", 0) * gyro_scale, 5)
+            telem_update["gy_raw"] = round(imu.get("ygyro", 0) * gyro_scale, 5)
+            telem_update["gz_raw"] = round(imu.get("zgyro", 0) * gyro_scale, 5)
 
         with _telem_lock:
             _telem.update(telem_update)
 
         # ── 航位推算积分 ──────────────────────────────────────────────────
         if imu and attitude:
-            scale = 9.80665 / 1000.0
+            scale = _imu_accel_scale(imu_msg)
             ax_b = imu.get("xacc", 0) * scale
             ay_b = imu.get("yacc", 0) * scale
             az_b = imu.get("zacc", 0) * scale

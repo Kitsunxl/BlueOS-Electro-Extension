@@ -7,18 +7,58 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, minimal-ui">
 </head>
 <style>
-    .v-card { padding: 16px; }
-    h1 { margin-bottom: 16px; text-align: center; }
+    html, body, #app { background: #f6f8fb; }
+    .v-application { background: #f6f8fb !important; color: #172033 !important; }
+    .v-card {
+        padding: 16px;
+        border-color: #dfe5ee !important;
+        border-radius: 8px !important;
+        box-shadow: 0 1px 2px rgba(17, 24, 39, 0.04) !important;
+        background: #ffffff !important;
+    }
+    h1 {
+        margin: 4px 0 16px;
+        text-align: left;
+        font-size: 24px;
+        font-weight: 700;
+        color: #111827;
+        letter-spacing: 0;
+    }
+    .section-title { font-size:13px;font-weight:700;color:#172033;margin-bottom:10px; }
+    .muted { color:#667085 !important; }
+    .status-strip { display:flex; gap:18px; align-items:center; flex-wrap:wrap; }
+    .status-item { display:flex; align-items:center; color:#475467; font-size:12px; }
+    .diag-strip {
+        margin-top: 10px;
+        padding: 10px 12px;
+        border: 1px solid #e4e7ec;
+        border-radius: 6px;
+        background: #f9fafb;
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+        font-size: 12px;
+        color: #475467;
+    }
+    .diag-pill {
+        display:inline-flex;
+        align-items:center;
+        gap:5px;
+        padding:3px 8px;
+        border-radius:999px;
+        background:#eef2f7;
+        color:#344054;
+    }
 
     .terminal {
-        background: #1e1e1e; color: #d4d4d4;
+        background: #101828; color: #e4e7ec;
         font-family: 'Courier New', monospace; font-size: 12px;
-        height: 300px; overflow-y: auto; padding: 10px 14px; border-radius: 4px;
+        height: 300px; overflow-y: auto; padding: 10px 14px; border-radius: 6px;
     }
     .log-line { line-height: 1.8; white-space: pre-wrap; word-break: break-all; }
-    .log-idx  { color: #555; margin-right: 8px; user-select: none; display: inline-block; min-width: 36px; text-align: right; }
+    .log-idx  { color: #98a2b3; margin-right: 8px; user-select: none; display: inline-block; min-width: 36px; text-align: right; }
     .log-ts   { color: #569cd6; margin-right: 8px; user-select: none; }
-    .log-text { color: #d4d4d4; }
+    .log-text { color: #e4e7ec; }
     .log-line.is-error .log-text { color: #f48771; }
 
     .dot { width:10px;height:10px;border-radius:50%;display:inline-block;margin-right:6px;vertical-align:middle; }
@@ -28,25 +68,33 @@
 
     /* 数值显示格 */
     .val-box { text-align:center; padding: 6px 4px; }
-    .val-num { font-size:15px; font-weight:bold; font-family:monospace; color:#80cbc4; }
-    .val-lbl { font-size:10px; color:#888; margin-top:2px; }
+    .val-num { font-size:15px; font-weight:bold; font-family:monospace; color:#0f766e; }
+    .val-lbl { font-size:10px; color:#667085; margin-top:2px; }
 
     /* DR 位置大字 */
-    .dr-big { font-size:22px; font-weight:bold; font-family:monospace; color:#00e5ff; }
-    .dr-lbl { font-size:11px; color:#888; }
+    .dr-big { font-size:22px; font-weight:bold; font-family:monospace; color:#0369a1; }
+    .dr-lbl { font-size:11px; color:#667085; }
 
     /* 轨迹画布 */
-    #trackCanvas { width:100%; border-radius:4px; background:#0d1117; display:block; cursor:crosshair; }
+    #trackCanvas {
+        width:100%;
+        border-radius:6px;
+        border:1px solid #e4e7ec;
+        background:#ffffff;
+        display:block;
+        cursor:crosshair;
+    }
 
     /* EKF bar */
-    .ekf-bg   { background:#2a2a2a; border-radius:3px; height:7px; margin-top:2px; }
+    .ekf-bg   { background:#edf2f7; border-radius:3px; height:7px; margin-top:2px; }
     .ekf-fill { height:7px; border-radius:3px; transition:width .3s; }
 
     /* 漂移警告 */
     .drift-banner {
-        background: linear-gradient(90deg,#b71c1c,#880e4f);
+        background: #fff7ed;
+        border: 1px solid #fed7aa;
         border-radius:6px; padding:8px 14px; margin-bottom:8px;
-        font-size:13px; color:#fff; display:flex; align-items:center; gap:8px;
+        font-size:13px; color:#9a3412; display:flex; align-items:center; gap:8px;
     }
 
     /* 3D 迷你视图标签 */
@@ -64,25 +112,29 @@
     <v-row>
       <v-col>
         <v-card outlined class="pa-3">
-          <v-row align="center" no-gutters wrap>
-            <v-col cols="auto" class="mr-4">
+          <div class="status-strip">
+            <div class="status-item">
               <span class="dot" :class="status.connected?'dot-green':'dot-red'"></span>
-              <span class="caption">串口 {{ status.connected?'已连接':(status.error||'未连接') }}</span>
-            </v-col>
-            <v-col cols="auto" class="mr-4">
+              <span>串口 {{ status.connected?'已连接':(status.error||'未连接') }}</span>
+            </div>
+            <div class="status-item">
               <span class="dot" :class="mavOk?'dot-green':'dot-yellow'"></span>
-              <span class="caption">MAVLink2REST</span>
-            </v-col>
-            <v-col cols="auto" class="mr-4">
-              <span class="caption grey--text">积分时长 {{ fmtTime(telem.dr_time) }}</span>
-            </v-col>
-            <v-col cols="auto" class="mr-4">
-              <span class="caption grey--text">轨迹点 {{ trackPts.length }}</span>
-            </v-col>
-            <v-col cols="auto" class="mr-4">
-              <span class="caption grey--text">运行 {{ fmtUptime(status.uptime) }}</span>
-            </v-col>
-          </v-row>
+              <span>MAVLink2REST</span>
+            </div>
+            <div class="status-item">IMU {{ telem.imu_ok ? (telem.imu_message || 'OK') : '无数据' }}</div>
+            <div class="status-item">姿态 {{ telem.attitude_ok ? 'OK' : '无数据' }}</div>
+            <div class="status-item">积分时长 {{ fmtTime(telem.dr_time) }}</div>
+            <div class="status-item">轨迹点 {{ trackPts.length }}</div>
+            <div class="status-item">运行 {{ fmtUptime(status.uptime) }}</div>
+          </div>
+          <div class="diag-strip">
+            <span class="diag-pill">IMU: {{ mavMsgState(telem.imu_message || 'SCALED_IMU2') }}</span>
+            <span class="diag-pill">SCALED_IMU2: {{ mavMsgState('SCALED_IMU2') }}</span>
+            <span class="diag-pill">SCALED_IMU: {{ mavMsgState('SCALED_IMU') }}</span>
+            <span class="diag-pill">RAW_IMU: {{ mavMsgState('RAW_IMU') }}</span>
+            <span class="diag-pill">ATTITUDE: {{ mavMsgState('ATTITUDE') }}</span>
+            <span class="muted">源 {{ telem.mavlink_base || '未连接' }}</span>
+          </div>
         </v-card>
       </v-col>
     </v-row>
@@ -91,7 +143,7 @@
     <v-row v-if="telem.drift_warn" class="mt-1">
       <v-col>
         <div class="drift-banner">
-          <v-icon color="white" small>mdi-alert</v-icon>
+          <v-icon color="orange darken-3" small>mdi-alert</v-icon>
           <strong>漂移警告：</strong>
           航位推算已积分超过 {{ fmtTime(telem.dr_time) }}，纯 IMU 位置误差随时间累积，仅供参考。
           建议定期按"重置归零"重新计算。
@@ -106,12 +158,12 @@
         <v-card outlined class="pa-2">
           <div style="display:flex;gap:12px;justify-content:center;align-items:flex-start;flex-wrap:wrap">
             <div style="text-align:center">
-              <canvas id="horizonCanvas" width="110" height="110" style="border-radius:50%;border:2px solid #444;"></canvas>
-              <div style="font-size:10px;color:#888;margin-top:3px">人工地平仪</div>
+              <canvas id="horizonCanvas" width="110" height="110" style="border-radius:50%;border:2px solid #cbd5e1;"></canvas>
+              <div style="font-size:10px;color:#667085;margin-top:3px">人工地平仪</div>
             </div>
             <div style="text-align:center">
-              <canvas id="compassCanvas" width="110" height="110" style="border-radius:50%;border:2px solid #444;"></canvas>
-              <div style="font-size:10px;color:#888;margin-top:3px">罗盘</div>
+              <canvas id="compassCanvas" width="110" height="110" style="border-radius:50%;border:2px solid #cbd5e1;"></canvas>
+              <div style="font-size:10px;color:#667085;margin-top:3px">罗盘</div>
             </div>
           </div>
           <v-row no-gutters class="mt-2">
@@ -128,9 +180,9 @@
           </v-row>
           <!-- EKF -->
           <div class="mt-2">
-            <div style="font-size:10px;color:#888">EKF 水平位置方差 {{ f4(telem.ekf_pos_horiz) }}</div>
+            <div style="font-size:10px;color:#667085">EKF 水平位置方差 {{ f4(telem.ekf_pos_horiz) }}</div>
             <div class="ekf-bg"><div class="ekf-fill" :style="ekfStyle(telem.ekf_pos_horiz,'#4caf50','#f44336')"></div></div>
-            <div style="font-size:10px;color:#888;margin-top:3px">EKF 垂直位置方差 {{ f4(telem.ekf_pos_vert) }}</div>
+            <div style="font-size:10px;color:#667085;margin-top:3px">EKF 垂直位置方差 {{ f4(telem.ekf_pos_vert) }}</div>
             <div class="ekf-bg"><div class="ekf-fill" :style="ekfStyle(telem.ekf_pos_vert,'#4caf50','#f44336')"></div></div>
           </div>
         </v-card>
@@ -140,7 +192,7 @@
       <v-col cols="12" sm="4">
         <v-card outlined>
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-            <span style="font-size:13px;font-weight:bold">航位推算位置（局部坐标）</span>
+            <span class="section-title" style="margin-bottom:0">航位推算位置（局部坐标）</span>
             <v-btn small color="warning" @click="resetDR">
               <v-icon left small>mdi-restart</v-icon>重置归零
             </v-btn>
@@ -157,13 +209,13 @@
             <v-col class="val-box"><div class="val-num">{{ fmtTime(telem.dr_time) }}</div><div class="val-lbl">积分时长</div></v-col>
           </v-row>
           <v-divider class="my-2"></v-divider>
-          <div style="font-size:11px;color:#888;margin-bottom:4px">世界系加速度（去重力后）</div>
+          <div style="font-size:11px;color:#667085;margin-bottom:4px">世界系加速度（去重力后）</div>
           <v-row no-gutters>
             <v-col class="val-box"><div class="val-num" style="color:#ef9a9a">{{ f3(telem.ax_w) }}</div><div class="val-lbl">aX m/s²</div></v-col>
             <v-col class="val-box"><div class="val-num" style="color:#a5d6a7">{{ f3(telem.ay_w) }}</div><div class="val-lbl">aY m/s²</div></v-col>
             <v-col class="val-box"><div class="val-num" style="color:#90caf9">{{ f3(telem.az_w) }}</div><div class="val-lbl">aZ m/s²</div></v-col>
           </v-row>
-          <div style="font-size:11px;color:#888;margin-top:6px;margin-bottom:4px">机体系加速度（原始）</div>
+          <div style="font-size:11px;color:#667085;margin-top:6px;margin-bottom:4px">机体系加速度（原始）</div>
           <v-row no-gutters>
             <v-col class="val-box"><div class="val-num" style="font-size:12px;color:#ef9a9a">{{ f3(telem.ax_raw) }}</div><div class="val-lbl">aX_b</div></v-col>
             <v-col class="val-box"><div class="val-num" style="font-size:12px;color:#a5d6a7">{{ f3(telem.ay_raw) }}</div><div class="val-lbl">aY_b</div></v-col>
@@ -175,7 +227,7 @@
       <!-- 串口配置 -->
       <v-col cols="12" sm="4">
         <v-card outlined>
-          <div style="font-size:13px;font-weight:bold;margin-bottom:10px">串口配置</div>
+          <div class="section-title">串口配置</div>
           <v-switch v-model="enabled" inset dense :label="`串口：${enabled?'启用':'停用'}`" @change="setEnabled($event)"></v-switch>
           <v-select v-model="selectedPort" :items="portItems" item-text="label" item-value="device" label="串口" outlined dense class="mb-2"></v-select>
           <v-select v-model="selectedBaud" :items="baudRates" label="波特率" outlined dense class="mb-2"></v-select>
@@ -202,7 +254,7 @@
             <v-btn small class="ml-2" @click="resetDR" color="warning"><v-icon left small>mdi-restart</v-icon>重置 DR</v-btn>
             <v-switch v-model="showArrows" dense hide-details label="航向箭头" class="mt-0 ml-3"></v-switch>
             <v-switch v-model="showGrid"   dense hide-details label="网格"    class="mt-0 ml-3"></v-switch>
-            <span style="font-family:monospace;font-size:11px;color:#80cbc4;margin-left:auto">
+            <span style="font-family:monospace;font-size:11px;color:#0f766e;margin-left:auto">
               当前 X={{ f2(telem.dr_x) }}  Y={{ f2(telem.dr_y) }}  Z={{ f2(telem.dr_z) }} m
             </span>
           </v-row>
@@ -213,7 +265,7 @@
             @touchstart.prevent="onTS" @touchmove.prevent="onTM" @touchend="onTE">
           </canvas>
 
-          <div style="font-size:11px;color:#555;margin-top:4px">
+          <div style="font-size:11px;color:#667085;margin-top:6px">
             坐标原点 = 重置时的位置 &nbsp;·&nbsp;
             颜色渐变：紫→青 = 时间顺序 &nbsp;·&nbsp;
             滚轮缩放 · 拖拽平移
@@ -237,7 +289,7 @@
             <v-col cols="auto" class="ml-2"><v-switch v-model="showTs" label="时间戳" dense hide-details class="mt-0"></v-switch></v-col>
           </v-row>
           <div class="terminal" ref="terminal">
-            <div v-if="filteredLines.length===0" style="color:#555;text-align:center;padding-top:100px">
+            <div v-if="filteredLines.length===0" style="color:#98a2b3;text-align:center;padding-top:100px">
               {{ enabled ? '等待串口数据…' : '串口读取已停用' }}
             </div>
             <div v-for="line in filteredLines" :key="line.index" class="log-line" :class="{'is-error':/error|fail/i.test(line.raw)}">
@@ -268,7 +320,12 @@ function trackColor(t) {
 
 new Vue({
     el: '#app',
-    vuetify: new Vuetify({ theme:{ dark:true } }),
+    vuetify: new Vuetify({
+        theme:{
+            dark:false,
+            themes:{ light:{ primary:'#2563eb', secondary:'#0f766e', warning:'#d97706', error:'#dc2626' } }
+        }
+    }),
 
     data() { return {
         // 串口
@@ -413,7 +470,7 @@ new Vue({
             ctx.clearRect(0,0,W,H)
 
             // 背景
-            ctx.fillStyle='#0d1117'; ctx.fillRect(0,0,W,H)
+            ctx.fillStyle='#ffffff'; ctx.fillRect(0,0,W,H)
 
             const pts=this.trackPts
 
@@ -449,39 +506,39 @@ new Vue({
                 // 但 y 翻转，重算
                 const vTop=(0 -this.mapOY)/(-this.mapScale), vBot=(H-this.mapOY)/(-this.mapScale)
 
-                ctx.strokeStyle='#1c2333'; ctx.lineWidth=1
+                ctx.strokeStyle='#eef2f7'; ctx.lineWidth=1
                 const startH=Math.floor(left/gStep)*gStep
                 for(let h=startH; h<=right+gStep; h+=gStep){
                     const cx=toC(h,0).x
                     ctx.beginPath(); ctx.moveTo(cx,0); ctx.lineTo(cx,H); ctx.stroke()
-                    ctx.fillStyle='#2a3040'; ctx.font='9px sans-serif'; ctx.textAlign='center'
+                    ctx.fillStyle='#98a2b3'; ctx.font='9px sans-serif'; ctx.textAlign='center'
                     ctx.fillText(h.toFixed(h>=100||h<=-100?0:1)+'m', cx, H-4)
                 }
                 const startV=Math.floor(Math.min(vTop,vBot)/gStep)*gStep
                 for(let v=startV; v<=Math.max(vTop,vBot)+gStep; v+=gStep){
                     const cy=toC(0,v).y
                     ctx.beginPath(); ctx.moveTo(0,cy); ctx.lineTo(W,cy); ctx.stroke()
-                    ctx.fillStyle='#2a3040'; ctx.textAlign='left'
+                    ctx.fillStyle='#98a2b3'; ctx.textAlign='left'
                     ctx.fillText(v.toFixed(v>=100||v<=-100?0:1)+'m', 2, cy-2)
                 }
 
                 // 轴线
-                const ox=toC(0,0); ctx.strokeStyle='#2d4060'; ctx.lineWidth=1.5
+                const ox=toC(0,0); ctx.strokeStyle='#cbd5e1'; ctx.lineWidth=1.5
                 ctx.beginPath(); ctx.moveTo(ox.x,0); ctx.lineTo(ox.x,H); ctx.stroke()
                 ctx.beginPath(); ctx.moveTo(0,ox.y); ctx.lineTo(W,ox.y); ctx.stroke()
             }
 
             // 轴标签
-            ctx.fillStyle='#4a90d9'; ctx.font='bold 11px sans-serif'; ctx.textAlign='left'
+            ctx.fillStyle='#2563eb'; ctx.font='bold 11px sans-serif'; ctx.textAlign='left'
             const axH = this.viewTab===0?'X(东)':this.viewTab===1?'X(东)':'Y(北)'
             const axV = this.viewTab===0?'Y(北)':'Z(高)'
             ctx.fillText(`→ ${axH}`, W-55, H-6)
             ctx.save(); ctx.translate(14,50); ctx.rotate(-Math.PI/2); ctx.fillText(`↑ ${axV}`,0,0); ctx.restore()
 
             if(pts.length===0){
-                ctx.fillStyle='#445'; ctx.font='14px Roboto,sans-serif'; ctx.textAlign='center'
+                ctx.fillStyle='#667085'; ctx.font='14px Roboto,sans-serif'; ctx.textAlign='center'
                 ctx.fillText('暂无轨迹 — 等待 IMU 数据…', W/2, H/2-10)
-                ctx.font='11px Roboto,sans-serif'; ctx.fillStyle='#334'
+                ctx.font='11px Roboto,sans-serif'; ctx.fillStyle='#98a2b3'
                 ctx.fillText('后端以 10Hz 采集 SCALED_IMU2 + ATTITUDE 进行航位推算', W/2, H/2+14)
                 this._drawCurMarker(ctx,W/2,H/2)
                 return
@@ -517,13 +574,13 @@ new Vue({
             const sp=this._proj(pts[0]); const sc=toC(sp.h,sp.v)
             ctx.beginPath(); ctx.arc(sc.x,sc.y,7,0,Math.PI*2)
             ctx.fillStyle='#76ff03'; ctx.fill()
-            ctx.fillStyle='#000'; ctx.font='bold 8px sans-serif'; ctx.textAlign='center'
+            ctx.fillStyle='#172033'; ctx.font='bold 8px sans-serif'; ctx.textAlign='center'
             ctx.fillText('S',sc.x,sc.y+3)
 
             // 当前位置
             const lp=this._proj(pts[pts.length-1]); const lc=toC(lp.h,lp.v)
             ctx.beginPath(); ctx.arc(lc.x,lc.y,10,0,Math.PI*2)
-            ctx.strokeStyle='rgba(0,229,255,0.3)'; ctx.lineWidth=4; ctx.stroke()
+            ctx.strokeStyle='rgba(37,99,235,0.22)'; ctx.lineWidth=4; ctx.stroke()
             this._drawCurMarker(ctx,lc.x,lc.y)
 
             // 比例尺
@@ -532,8 +589,8 @@ new Vue({
 
         _drawCurMarker(ctx,x,y){
             ctx.beginPath(); ctx.arc(x,y,5,0,Math.PI*2)
-            ctx.fillStyle='#00e5ff'; ctx.fill()
-            ctx.strokeStyle='#fff'; ctx.lineWidth=1.5; ctx.stroke()
+            ctx.fillStyle='#2563eb'; ctx.fill()
+            ctx.strokeStyle='#ffffff'; ctx.lineWidth=1.5; ctx.stroke()
         },
         _drawScale(ctx,W,H){
             const pxPerM=this.mapScale; if(pxPerM<=0) return
@@ -542,12 +599,12 @@ new Vue({
             const scaleM=nice.reduce((a,b)=>Math.abs(b-target)<Math.abs(a-target)?b:a)
             const scaleLen=scaleM*pxPerM
             const sx=16,sy=H-26
-            ctx.fillStyle='rgba(0,0,0,.55)'; ctx.fillRect(sx-2,sy-14,scaleLen+4,20)
-            ctx.strokeStyle='#80cbc4'; ctx.lineWidth=2
+            ctx.fillStyle='rgba(248,250,252,.92)'; ctx.fillRect(sx-2,sy-14,scaleLen+4,20)
+            ctx.strokeStyle='#0f766e'; ctx.lineWidth=2
             ctx.beginPath(); ctx.moveTo(sx,sy); ctx.lineTo(sx+scaleLen,sy)
             ctx.moveTo(sx,sy-5); ctx.lineTo(sx,sy+2)
             ctx.moveTo(sx+scaleLen,sy-5); ctx.lineTo(sx+scaleLen,sy+2); ctx.stroke()
-            ctx.fillStyle='#80cbc4'; ctx.font='10px sans-serif'; ctx.textAlign='center'
+            ctx.fillStyle='#0f766e'; ctx.font='10px sans-serif'; ctx.textAlign='center'
             ctx.fillText(scaleM>=1000?`${scaleM/1000}km`:`${scaleM}m`, sx+scaleLen/2, sy-2)
         },
 
@@ -574,7 +631,7 @@ new Vue({
             ctx.fillStyle='#ffd600'; ctx.fill()
             // 边框
             ctx.beginPath(); ctx.arc(cx,cy,r,0,Math.PI*2)
-            ctx.strokeStyle='#555'; ctx.lineWidth=2; ctx.stroke()
+            ctx.strokeStyle='#cbd5e1'; ctx.lineWidth=2; ctx.stroke()
         },
 
         // ══ 罗盘 ═════════════════════════════════════════════════════════════
@@ -583,8 +640,8 @@ new Vue({
             const ctx=c.getContext('2d'),W=110,H=110,cx=55,cy=55,r=50
             ctx.clearRect(0,0,W,H)
             ctx.beginPath(); ctx.arc(cx,cy,r,0,Math.PI*2)
-            ctx.fillStyle='#1a1a2e'; ctx.fill()
-            ctx.strokeStyle='#444'; ctx.lineWidth=2; ctx.stroke()
+            ctx.fillStyle='#f8fafc'; ctx.fill()
+            ctx.strokeStyle='#cbd5e1'; ctx.lineWidth=2; ctx.stroke()
             const yawDeg=(this.telem.yaw||0)*180/Math.PI
             for(let i=0;i<36;i++){
                 const angle=(i*10-yawDeg)*Math.PI/180
@@ -592,20 +649,20 @@ new Vue({
                 ctx.beginPath()
                 ctx.moveTo(cx+Math.cos(angle)*inner,cy+Math.sin(angle)*inner)
                 ctx.lineTo(cx+Math.cos(angle)*(r-2),cy+Math.sin(angle)*(r-2))
-                ctx.strokeStyle=i%9===0?'#80cbc4':'#555'
+                ctx.strokeStyle=i%9===0?'#0f766e':'#cbd5e1'
                 ctx.lineWidth=i%9===0?2:1; ctx.stroke()
             }
             [['N',0],['E',90],['S',180],['W',270]].forEach(([lb,deg])=>{
                 const a=(deg-yawDeg)*Math.PI/180-Math.PI/2
                 const tx=cx+Math.cos(a)*(r-18), ty=cy+Math.sin(a)*(r-18)
-                ctx.fillStyle=lb==='N'?'#f44336':'#80cbc4'
+                ctx.fillStyle=lb==='N'?'#dc2626':'#0f766e'
                 ctx.font=`bold ${lb==='N'?13:11}px sans-serif`
                 ctx.textAlign='center'; ctx.textBaseline='middle'
                 ctx.fillText(lb,tx,ty)
             })
             ctx.beginPath(); ctx.moveTo(cx,cy-r+7); ctx.lineTo(cx-5,cy+6); ctx.lineTo(cx+5,cy+6)
             ctx.closePath(); ctx.fillStyle='#f44336'; ctx.fill()
-            ctx.fillStyle='#fff'; ctx.font='bold 11px monospace'
+            ctx.fillStyle='#172033'; ctx.font='bold 11px monospace'
             ctx.textAlign='center'; ctx.textBaseline='middle'
             ctx.fillText(((yawDeg%360+360)%360).toFixed(1)+'°',cx,cy+1)
         },
@@ -627,6 +684,12 @@ new Vue({
 
         // ══ EKF 条 ════════════════════════════════════════════════════════════
         ekfStyle(v,gc,bc){ const p=Math.min((v||0)/2*100,100); return `width:${p}%;background:${p>50?bc:gc}` },
+        mavMsgState(msg){
+            const s=this.telem.mavlink_status && this.telem.mavlink_status[msg]
+            if(!s) return '未尝试'
+            if(s.ok) return 'OK'
+            return s.error || '失败'
+        },
 
         // ══ 格式化 ════════════════════════════════════════════════════════════
         fmtDeg(v){ return v!=null?(v*180/Math.PI).toFixed(1):'--' },
