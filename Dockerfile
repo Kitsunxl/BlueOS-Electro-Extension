@@ -1,12 +1,14 @@
 FROM python:3.9-slim-bullseye
 
+ENV PYTHONUNBUFFERED=1
+
 RUN mkdir -p /home/pi
 RUN usermod -aG dialout root
 
 COPY serial-reader /home/pi/serial-reader
 RUN cd /home/pi/serial-reader && pip3 install . && chmod +x main.py
 
-LABEL version="1.0.0"
+LABEL version="1.0.1"
 LABEL permissions='\
 {\
   "ExposedPorts": {\
@@ -39,4 +41,4 @@ LABEL readme='https://raw.githubusercontent.com/your-repo/main/README.md'
 LABEL links='{"website":"https://github.com/your-repo","support":"https://github.com/your-repo/issues"}'
 LABEL requirements="core >= 1.1"
 
-ENTRYPOINT /home/pi/serial-reader/main.py
+ENTRYPOINT ["python3", "/home/pi/serial-reader/main.py"]

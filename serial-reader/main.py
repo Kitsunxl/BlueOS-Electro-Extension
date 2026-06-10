@@ -51,6 +51,9 @@ _dr_state: dict     = {
 }
 _dr_lock            = threading.Lock()
 _dr_reset_flag      = threading.Event()       # 外部触发重置
+_gravity_bias       = None                    # 世界系静止加速度基线
+_gravity_samples    = []
+GRAVITY_CAL_SAMPLES = 30
 
 # ── MAVLink 拉取 ─────────────────────────────────────────────────────────────
 
@@ -113,9 +116,9 @@ def _imu_gyro_scale(_msg: str):
 
 def _body_to_world(ax_b, ay_b, az_b, roll, pitch, yaw):
     """
-    把机体系加速度旋转到世界系（NED），同时减去重力。
+    把机体系加速度旋转到世界系。
     roll/pitch/yaw 单位：弧度。
-    返回 (ax_w, ay_w, az_w) 单位 m/s²。
+    返回世界系的含重力加速度/比力 (ax_w, ay_w, az_w)，单位 m/s²。
     """
     cr, sr = math.cos(roll),  math.sin(roll)
     cp, sp = math.cos(pitch), math.sin(pitch)
@@ -126,16 +129,17 @@ def _body_to_world(ax_b, ay_b, az_b, roll, pitch, yaw):
     r10 = sy*cp;  r11 = sy*sp*sr + cy*cr;  r12 = sy*sp*cr - cy*sr
     r20 = -sp;    r21 = cp*sr;             r22 = cp*cr
 
-    # 世界系加速度 = R * a_body，然后减去重力（NED 中 g 在 z 正方向）
+    # 世界系加速度 = R * a_body。这里先不去重力，后续用静止基线扣除。
     ax_w =  r00*ax_b + r01*ay_b + r02*az_b
     ay_w =  r10*ax_b + r11*ay_b + r12*az_b
-    az_w = (r20*ax_b + r21*ay_b + r22*az_b) - G
+    az_w =  r20*ax_b + r21*ay_b + r22*az_b
 
     return ax_w, ay_w, az_w
 
 # ── 航位推算主循环 ────────────────────────────────────────────────────────────
 
 def _dr_loop():
+    global _gravity_bias, _gravity_samples
     dt       = 1.0 / DR_HZ
     last_ts  = None          # 上一条 RAW_IMU 的 time_usec，用于对齐实际 dt
 
@@ -149,6 +153,8 @@ def _dr_loop():
                                  running_time=0, still_frames=0)
             with _track_lock:
                 _track.clear()
+            _gravity_bias = None
+            _gravity_samples = []
             last_ts = None
 
         t0 = time.time()
@@ -207,7 +213,22 @@ def _dr_loop():
             pitch = attitude.get("pitch", 0)
             yaw   = attitude.get("yaw",   0)
 
-            ax_w, ay_w, az_w = _body_to_world(ax_b, ay_b, az_b, roll, pitch, yaw)
+            ax_g, ay_g, az_g = _body_to_world(ax_b, ay_b, az_b, roll, pitch, yaw)
+
+            if _gravity_bias is None:
+                _gravity_samples.append((ax_g, ay_g, az_g))
+                if len(_gravity_samples) >= GRAVITY_CAL_SAMPLES:
+                    n = len(_gravity_samples)
+                    _gravity_bias = (
+                        sum(p[0] for p in _gravity_samples) / n,
+                        sum(p[1] for p in _gravity_samples) / n,
+                        sum(p[2] for p in _gravity_samples) / n,
+                    )
+                ax_w, ay_w, az_w = 0.0, 0.0, 0.0
+            else:
+                ax_w = ax_g - _gravity_bias[0]
+                ay_w = ay_g - _gravity_bias[1]
+                az_w = az_g - _gravity_bias[2]
 
             # 去除极小噪声
             def deadband(v): return v if abs(v) > ACCEL_DEADBAND else 0.0
@@ -262,6 +283,10 @@ def _dr_loop():
                     "dr_time":  round(_dr_state["running_time"], 1),
                     "drift_warn": dw,
                     "ax_w": round(ax_w, 4), "ay_w": round(ay_w, 4), "az_w": round(az_w, 4),
+                    "ax_g": round(ax_g, 4), "ay_g": round(ay_g, 4), "az_g": round(az_g, 4),
+                    "gravity_calibrated": _gravity_bias is not None,
+                    "gravity_cal_samples": len(_gravity_samples),
+                    "gravity_bias": [round(v, 4) for v in _gravity_bias] if _gravity_bias else None,
                 })
 
             # 记录轨迹点（每次积分都记，降采样到 DR_HZ/2）
@@ -323,6 +348,10 @@ if __name__ == "__main__":
     @app.route("/")
     def root(): return app.send_static_file("index.html")
 
+    @app.route("/health")
+    def health():
+        return json.dumps({"ok": True, "service": "serial-reader"})
+
     @app.route("/get_status")
     def get_status(): return json.dumps(api.get_status())
 
@@ -380,4 +409,4 @@ if __name__ == "__main__":
         return json.dumps(True)
 
     driver.start()
-    app.run(host="0.0.0.0", port=9001)
+    app.run(host="0.0.0.0", port=9001, threaded=True)
