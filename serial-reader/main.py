@@ -53,6 +53,8 @@ _dr_lock            = threading.Lock()
 _dr_reset_flag      = threading.Event()       # 外部触发重置
 _gravity_bias       = None                    # 世界系静止加速度基线
 _gravity_samples    = []
+_accel_scale        = None                    # raw accel count -> m/s²
+_accel_scale_samples = []
 GRAVITY_CAL_SAMPLES = 30
 
 # ── MAVLink 拉取 ─────────────────────────────────────────────────────────────
@@ -104,7 +106,7 @@ def _fetch_imu():
 
 def _imu_accel_scale(_msg: str):
     # SCALED_IMU/RAW_IMU acceleration fields are in milli-g.
-    return G / 1000.0
+    return _accel_scale if _accel_scale is not None else G / 1000.0
 
 
 def _imu_gyro_scale(_msg: str):
@@ -139,7 +141,7 @@ def _body_to_world(ax_b, ay_b, az_b, roll, pitch, yaw):
 # ── 航位推算主循环 ────────────────────────────────────────────────────────────
 
 def _dr_loop():
-    global _gravity_bias, _gravity_samples
+    global _gravity_bias, _gravity_samples, _accel_scale, _accel_scale_samples
     dt       = 1.0 / DR_HZ
     last_ts  = None          # 上一条 RAW_IMU 的 time_usec，用于对齐实际 dt
 
@@ -155,6 +157,8 @@ def _dr_loop():
                 _track.clear()
             _gravity_bias = None
             _gravity_samples = []
+            _accel_scale = None
+            _accel_scale_samples = []
             last_ts = None
 
         t0 = time.time()
@@ -190,7 +194,20 @@ def _dr_loop():
         if imu:
             # SCALED_IMU2: xacc/yacc/zacc 单位 mG，换算 m/s²
             # RAW_IMU:      同上（ArduSub 统一用 mG）
-            scale = _imu_accel_scale(imu_msg)
+            raw_norm_counts = math.sqrt(
+                imu.get("xacc", 0)**2 +
+                imu.get("yacc", 0)**2 +
+                imu.get("zacc", 0)**2
+            )
+            if _accel_scale is None and raw_norm_counts > 1:
+                _accel_scale_samples.append(raw_norm_counts)
+                instant_scale = G / raw_norm_counts
+                if len(_accel_scale_samples) >= GRAVITY_CAL_SAMPLES:
+                    avg_counts = sum(_accel_scale_samples) / len(_accel_scale_samples)
+                    _accel_scale = G / avg_counts
+                scale = instant_scale
+            else:
+                scale = _imu_accel_scale(imu_msg)
             telem_update["ax_raw"] = round(imu.get("xacc", 0) * scale, 4)
             telem_update["ay_raw"] = round(imu.get("yacc", 0) * scale, 4)
             telem_update["az_raw"] = round(imu.get("zacc", 0) * scale, 4)
@@ -199,6 +216,8 @@ def _dr_loop():
                 telem_update["ay_raw"]**2 +
                 telem_update["az_raw"]**2
             ), 4)
+            telem_update["accel_scale"] = round(scale, 8)
+            telem_update["accel_scale_calibrated"] = _accel_scale is not None
             gyro_scale = _imu_gyro_scale(imu_msg)
             telem_update["gx_raw"] = round(imu.get("xgyro", 0) * gyro_scale, 5)
             telem_update["gy_raw"] = round(imu.get("ygyro", 0) * gyro_scale, 5)
@@ -209,7 +228,15 @@ def _dr_loop():
 
         # ── 航位推算积分 ──────────────────────────────────────────────────
         if imu and attitude:
-            scale = _imu_accel_scale(imu_msg)
+            raw_norm_counts = math.sqrt(
+                imu.get("xacc", 0)**2 +
+                imu.get("yacc", 0)**2 +
+                imu.get("zacc", 0)**2
+            )
+            if _accel_scale is None and raw_norm_counts > 1:
+                scale = G / raw_norm_counts
+            else:
+                scale = _imu_accel_scale(imu_msg)
             ax_b = imu.get("xacc", 0) * scale
             ay_b = imu.get("yacc", 0) * scale
             az_b = imu.get("zacc", 0) * scale

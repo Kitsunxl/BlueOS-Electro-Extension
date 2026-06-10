@@ -123,6 +123,7 @@
             </div>
             <div class="status-item">IMU {{ telem.imu_ok ? (telem.imu_message || 'OK') : '无数据' }}</div>
             <div class="status-item">姿态 {{ telem.attitude_ok ? 'OK' : '无数据' }}</div>
+            <div class="status-item">加速度标定 {{ telem.accel_scale_calibrated ? '已校准' : '进行中' }}</div>
             <div class="status-item">重力基线 {{ telem.gravity_calibrated ? '已校准' : ((telem.gravity_cal_samples || 0) + '/30') }}</div>
             <div class="status-item">积分时长 {{ fmtTime(telem.dr_time) }}</div>
             <div class="status-item">轨迹点 {{ trackPts.length }}</div>
