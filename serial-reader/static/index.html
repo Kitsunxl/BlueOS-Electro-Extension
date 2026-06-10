@@ -1,326 +1,300 @@
 <html>
-
 <head>
-    <title>Serial Monitor</title>
+    <title>Serial Monitor + 航位推算</title>
     <link href="https://fonts.googleapis.com/css?family=Roboto:100,300,400,500,700,900" rel="stylesheet">
     <link href="/static/css/materialdesignicons.min.css" rel="stylesheet">
     <link href="/static/css/vuetify.min.css" rel="stylesheet">
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, minimal-ui">
 </head>
-
 <style>
-    .v-card { padding: 20px; }
-    h1 { margin-bottom: 20px; text-align: center; }
+    .v-card { padding: 16px; }
+    h1 { margin-bottom: 16px; text-align: center; }
 
     .terminal {
-        background: #1e1e1e;
-        color: #d4d4d4;
-        font-family: 'Roboto Mono', 'Courier New', monospace;
-        font-size: 12px;
-        height: 380px;
-        overflow-y: auto;
-        padding: 10px 14px;
-        border-radius: 4px;
+        background: #1e1e1e; color: #d4d4d4;
+        font-family: 'Courier New', monospace; font-size: 12px;
+        height: 300px; overflow-y: auto; padding: 10px 14px; border-radius: 4px;
     }
     .log-line { line-height: 1.8; white-space: pre-wrap; word-break: break-all; }
-    .log-idx  { color: #555; margin-right: 10px; user-select: none; display: inline-block; min-width: 38px; text-align: right; }
-    .log-ts   { color: #569cd6; margin-right: 10px; user-select: none; }
+    .log-idx  { color: #555; margin-right: 8px; user-select: none; display: inline-block; min-width: 36px; text-align: right; }
+    .log-ts   { color: #569cd6; margin-right: 8px; user-select: none; }
     .log-text { color: #d4d4d4; }
     .log-line.is-error .log-text { color: #f48771; }
 
-    .dot {
-        width: 10px; height: 10px; border-radius: 50%;
-        display: inline-block; margin-right: 6px; vertical-align: middle;
+    .dot { width:10px;height:10px;border-radius:50%;display:inline-block;margin-right:6px;vertical-align:middle; }
+    .dot-green  { background:#4caf50; }
+    .dot-red    { background:#f44336; }
+    .dot-yellow { background:#ff9800; }
+
+    /* 数值显示格 */
+    .val-box { text-align:center; padding: 6px 4px; }
+    .val-num { font-size:15px; font-weight:bold; font-family:monospace; color:#80cbc4; }
+    .val-lbl { font-size:10px; color:#888; margin-top:2px; }
+
+    /* DR 位置大字 */
+    .dr-big { font-size:22px; font-weight:bold; font-family:monospace; color:#00e5ff; }
+    .dr-lbl { font-size:11px; color:#888; }
+
+    /* 轨迹画布 */
+    #trackCanvas { width:100%; border-radius:4px; background:#0d1117; display:block; cursor:crosshair; }
+
+    /* EKF bar */
+    .ekf-bg   { background:#2a2a2a; border-radius:3px; height:7px; margin-top:2px; }
+    .ekf-fill { height:7px; border-radius:3px; transition:width .3s; }
+
+    /* 漂移警告 */
+    .drift-banner {
+        background: linear-gradient(90deg,#b71c1c,#880e4f);
+        border-radius:6px; padding:8px 14px; margin-bottom:8px;
+        font-size:13px; color:#fff; display:flex; align-items:center; gap:8px;
     }
-    .dot-green  { background: #4caf50; }
-    .dot-red    { background: #f44336; }
-    .dot-yellow { background: #ff9800; }
 
-    /* 姿态仪表盘 */
-    .gauge-row { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
-    .gauge-box { text-align: center; }
-    .gauge-label { font-size: 11px; color: #aaa; margin-top: 4px; }
-    .gauge-val   { font-size: 13px; font-weight: bold; color: #80cbc4; font-family: monospace; }
-
-    /* 轨迹地图 */
-    #trackCanvas {
-        width: 100%;
-        border-radius: 4px;
-        background: #1a1a2e;
-        cursor: crosshair;
-        display: block;
-    }
-    .map-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
-    .coord-display { font-family: monospace; font-size: 11px; color: #80cbc4; margin-left: auto; }
-
-    /* EKF 状态条 */
-    .ekf-bar-wrap { margin: 4px 0; }
-    .ekf-bar-label { font-size: 11px; color: #aaa; margin-bottom: 2px; }
-    .ekf-bar-bg { background: #333; border-radius: 3px; height: 8px; }
-    .ekf-bar-fill { height: 8px; border-radius: 3px; transition: width 0.3s; }
+    /* 3D 迷你视图标签 */
+    .view-tabs .v-tab { min-width:80px; font-size:12px; }
 </style>
 
 <div id="app">
-    <v-app>
-        <v-main>
-            <v-container fluid>
-                <h1>Serial Monitor & 轨迹定位</h1>
+<v-app>
+<v-main>
+<v-container fluid>
 
-                <!-- ── 顶部状态栏 ─────────────────────────────────────── -->
-                <v-row>
-                    <v-col>
-                        <v-card outlined class="pa-3">
-                            <v-row align="center" no-gutters>
-                                <v-col cols="auto" class="mr-5">
-                                    <span class="dot" :class="status.connected ? 'dot-green' : 'dot-red'"></span>
-                                    <span>串口：{{ status.connected ? '已连接' : (status.error || '未连接') }}</span>
-                                </v-col>
-                                <v-col cols="auto" class="mr-5">
-                                    <span class="caption grey--text">{{ status.port }} @ {{ status.baud }}</span>
-                                </v-col>
-                                <v-col cols="auto" class="mr-5">
-                                    <span class="caption grey--text">共 {{ status.total_lines }} 行 / {{ formatBytes(status.total_bytes) }}</span>
-                                </v-col>
-                                <v-col cols="auto" class="mr-5">
-                                    <span class="caption grey--text">运行 {{ formatUptime(status.uptime) }}</span>
-                                </v-col>
-                                <!-- MAVLink 连接状态 -->
-                                <v-col cols="auto" class="mr-5">
-                                    <span class="dot" :class="mavConnected ? 'dot-green' : 'dot-yellow'"></span>
-                                    <span class="caption">MAVLink2REST</span>
-                                </v-col>
-                                <v-col cols="auto">
-                                    <span class="caption grey--text">轨迹点: {{ trackPoints.length }}</span>
-                                </v-col>
-                            </v-row>
-                        </v-card>
-                    </v-col>
-                </v-row>
+    <h1>Serial Monitor &amp; 航位推算（纯 IMU）</h1>
 
-                <!-- ── 姿态仪表行 ──────────────────────────────────────── -->
-                <v-row class="mt-2">
-                    <v-col>
-                        <v-card outlined class="pa-3">
-                            <v-row no-gutters align="center">
-                                <!-- 人工地平仪 -->
-                                <v-col cols="auto" class="mr-4">
-                                    <canvas id="horizonCanvas" width="100" height="100" style="border-radius:50%; border:2px solid #444;"></canvas>
-                                    <div class="gauge-label" style="text-align:center">人工地平仪</div>
-                                </v-col>
-                                <!-- 罗盘 -->
-                                <v-col cols="auto" class="mr-4">
-                                    <canvas id="compassCanvas" width="100" height="100" style="border-radius:50%; border:2px solid #444;"></canvas>
-                                    <div class="gauge-label" style="text-align:center">罗盘</div>
-                                </v-col>
-                                <!-- 数值 -->
-                                <v-col>
-                                    <v-row no-gutters>
-                                        <v-col cols="4" class="gauge-box pa-2">
-                                            <div class="gauge-val">{{ fmtDeg(telem.roll) }}°</div>
-                                            <div class="gauge-label">横滚 Roll</div>
-                                        </v-col>
-                                        <v-col cols="4" class="gauge-box pa-2">
-                                            <div class="gauge-val">{{ fmtDeg(telem.pitch) }}°</div>
-                                            <div class="gauge-label">俯仰 Pitch</div>
-                                        </v-col>
-                                        <v-col cols="4" class="gauge-box pa-2">
-                                            <div class="gauge-val">{{ fmtDeg(telem.yaw) }}°</div>
-                                            <div class="gauge-label">偏航 Yaw</div>
-                                        </v-col>
-                                        <v-col cols="4" class="gauge-box pa-2">
-                                            <div class="gauge-val">{{ fmtM(telem.rel_alt) }} m</div>
-                                            <div class="gauge-label">相对高度/深度</div>
-                                        </v-col>
-                                        <v-col cols="4" class="gauge-box pa-2">
-                                            <div class="gauge-val">{{ fmtMs(telem.vx, telem.vy, telem.vz) }}</div>
-                                            <div class="gauge-label">速度 m/s</div>
-                                        </v-col>
-                                        <v-col cols="4" class="gauge-box pa-2">
-                                            <div class="gauge-val">{{ fmtDeg(telem.heading) }}°</div>
-                                            <div class="gauge-label">航向 Heading</div>
-                                        </v-col>
-                                    </v-row>
-                                    <!-- EKF 状态 -->
-                                    <v-row no-gutters class="mt-1">
-                                        <v-col cols="4" class="pa-1">
-                                            <div class="ekf-bar-label">EKF 水平位置误差</div>
-                                            <div class="ekf-bar-bg">
-                                                <div class="ekf-bar-fill" :style="ekfBarStyle(telem.ekf_pos_horiz, '#4caf50', '#f44336')"></div>
-                                            </div>
-                                        </v-col>
-                                        <v-col cols="4" class="pa-1">
-                                            <div class="ekf-bar-label">EKF 垂直位置误差</div>
-                                            <div class="ekf-bar-bg">
-                                                <div class="ekf-bar-fill" :style="ekfBarStyle(telem.ekf_pos_vert, '#4caf50', '#f44336')"></div>
-                                            </div>
-                                        </v-col>
-                                        <v-col cols="4" class="pa-1">
-                                            <div class="ekf-bar-label">EKF 速度误差</div>
-                                            <div class="ekf-bar-bg">
-                                                <div class="ekf-bar-fill" :style="ekfBarStyle(telem.ekf_vel_variance, '#2196f3', '#f44336')"></div>
-                                            </div>
-                                        </v-col>
-                                    </v-row>
-                                </v-col>
-                            </v-row>
-                        </v-card>
-                    </v-col>
-                </v-row>
+    <!-- ── 顶部状态条 ─────────────────────────────────────── -->
+    <v-row>
+      <v-col>
+        <v-card outlined class="pa-3">
+          <v-row align="center" no-gutters wrap>
+            <v-col cols="auto" class="mr-4">
+              <span class="dot" :class="status.connected?'dot-green':'dot-red'"></span>
+              <span class="caption">串口 {{ status.connected?'已连接':(status.error||'未连接') }}</span>
+            </v-col>
+            <v-col cols="auto" class="mr-4">
+              <span class="dot" :class="mavOk?'dot-green':'dot-yellow'"></span>
+              <span class="caption">MAVLink2REST</span>
+            </v-col>
+            <v-col cols="auto" class="mr-4">
+              <span class="caption grey--text">积分时长 {{ fmtTime(telem.dr_time) }}</span>
+            </v-col>
+            <v-col cols="auto" class="mr-4">
+              <span class="caption grey--text">轨迹点 {{ trackPts.length }}</span>
+            </v-col>
+            <v-col cols="auto" class="mr-4">
+              <span class="caption grey--text">运行 {{ fmtUptime(status.uptime) }}</span>
+            </v-col>
+          </v-row>
+        </v-card>
+      </v-col>
+    </v-row>
 
-                <!-- ── 中间行：轨迹地图 + 坐标信息 ────────────────────── -->
-                <v-row class="mt-2">
-                    <v-col cols="12" md="8">
-                        <v-card outlined>
-                            <div class="map-toolbar">
-                                <v-btn small color="primary" @click="clearTrack">
-                                    <v-icon left small>mdi-delete</v-icon>清空轨迹
-                                </v-btn>
-                                <v-btn small @click="fitTrack">
-                                    <v-icon left small>mdi-fit-to-page</v-icon>适应视图
-                                </v-btn>
-                                <v-btn small @click="exportTrackCSV">
-                                    <v-icon left small>mdi-download</v-icon>导出 CSV
-                                </v-btn>
-                                <v-switch v-model="showHeading" dense hide-details label="航向箭头" class="mt-0 ml-2"></v-switch>
-                                <span class="coord-display">
-                                    {{ telem.lat != null ? telem.lat.toFixed(7) : '--' }},
-                                    {{ telem.lon != null ? telem.lon.toFixed(7) : '--' }}
-                                    | 深度 {{ fmtM(telem.rel_alt) }} m
-                                </span>
-                            </div>
-                            <canvas id="trackCanvas" :height="mapHeight" @wheel.prevent="onWheel" @mousedown="onMouseDown" @mousemove="onMouseMove" @mouseup="onMouseUp" @mouseleave="onMouseUp" @touchstart.prevent="onTouchStart" @touchmove.prevent="onTouchMove" @touchend="onTouchEnd"></canvas>
-                            <div style="font-size:11px;color:#555;margin-top:4px;">
-                                滚轮缩放 · 拖拽平移 · 蓝点=当前位置 · 颜色渐变=时间顺序（紫→青）
-                            </div>
-                        </v-card>
-                    </v-col>
+    <!-- ── 漂移警告横幅 ────────────────────────────────────── -->
+    <v-row v-if="telem.drift_warn" class="mt-1">
+      <v-col>
+        <div class="drift-banner">
+          <v-icon color="white" small>mdi-alert</v-icon>
+          <strong>漂移警告：</strong>
+          航位推算已积分超过 {{ fmtTime(telem.dr_time) }}，纯 IMU 位置误差随时间累积，仅供参考。
+          建议定期按"重置归零"重新计算。
+        </div>
+      </v-col>
+    </v-row>
 
-                    <!-- 右侧：配置 + 位置详情 -->
-                    <v-col cols="12" md="4">
-                        <v-card outlined class="mb-3">
-                            <h3 class="mb-3">串口配置</h3>
-                            <v-switch v-model="enabled" inset :label="`串口读取：${enabled ? '启用' : '停用'}`" @change="setEnabled($event)"></v-switch>
-                            <v-select v-model="selectedPort" :items="portItems" item-text="label" item-value="device" label="串口" outlined dense class="mb-2"></v-select>
-                            <v-select v-model="selectedBaud" :items="baudRates" label="波特率" outlined dense class="mb-3"></v-select>
-                            <v-btn block color="primary" @click="applyConfig">
-                                <v-icon left>mdi-check</v-icon>应用
-                            </v-btn>
-                            <v-btn block color="error" class="mt-2" @click="clearHistory">
-                                <v-icon left>mdi-delete</v-icon>清空串口记录
-                            </v-btn>
-                        </v-card>
+    <!-- ── 第一行：姿态仪表 + DR 当前位置 ─────────────────── -->
+    <v-row class="mt-2">
+      <!-- 人工地平仪 + 罗盘 -->
+      <v-col cols="12" sm="4">
+        <v-card outlined class="pa-2">
+          <div style="display:flex;gap:12px;justify-content:center;align-items:flex-start;flex-wrap:wrap">
+            <div style="text-align:center">
+              <canvas id="horizonCanvas" width="110" height="110" style="border-radius:50%;border:2px solid #444;"></canvas>
+              <div style="font-size:10px;color:#888;margin-top:3px">人工地平仪</div>
+            </div>
+            <div style="text-align:center">
+              <canvas id="compassCanvas" width="110" height="110" style="border-radius:50%;border:2px solid #444;"></canvas>
+              <div style="font-size:10px;color:#888;margin-top:3px">罗盘</div>
+            </div>
+          </div>
+          <v-row no-gutters class="mt-2">
+            <v-col class="val-box"><div class="val-num">{{ fmtDeg(telem.roll) }}°</div><div class="val-lbl">Roll</div></v-col>
+            <v-col class="val-box"><div class="val-num">{{ fmtDeg(telem.pitch) }}°</div><div class="val-lbl">Pitch</div></v-col>
+            <v-col class="val-box"><div class="val-num">{{ fmtDeg(telem.yaw) }}°</div><div class="val-lbl">Yaw</div></v-col>
+            <v-col class="val-box"><div class="val-num">{{ f2(telem.altitude) }}</div><div class="val-lbl">深度 m</div></v-col>
+          </v-row>
+          <!-- 角速度 -->
+          <v-row no-gutters>
+            <v-col class="val-box"><div class="val-num" style="font-size:12px">{{ f3(telem.rollspeed) }}</div><div class="val-lbl">ω_roll r/s</div></v-col>
+            <v-col class="val-box"><div class="val-num" style="font-size:12px">{{ f3(telem.pitchspeed) }}</div><div class="val-lbl">ω_pitch r/s</div></v-col>
+            <v-col class="val-box"><div class="val-num" style="font-size:12px">{{ f3(telem.yawspeed) }}</div><div class="val-lbl">ω_yaw r/s</div></v-col>
+          </v-row>
+          <!-- EKF -->
+          <div class="mt-2">
+            <div style="font-size:10px;color:#888">EKF 水平位置方差 {{ f4(telem.ekf_pos_horiz) }}</div>
+            <div class="ekf-bg"><div class="ekf-fill" :style="ekfStyle(telem.ekf_pos_horiz,'#4caf50','#f44336')"></div></div>
+            <div style="font-size:10px;color:#888;margin-top:3px">EKF 垂直位置方差 {{ f4(telem.ekf_pos_vert) }}</div>
+            <div class="ekf-bg"><div class="ekf-fill" :style="ekfStyle(telem.ekf_pos_vert,'#4caf50','#f44336')"></div></div>
+          </div>
+        </v-card>
+      </v-col>
 
-                        <v-card outlined>
-                            <h3 class="mb-2">当前位置</h3>
-                            <v-simple-table dense>
-                                <tbody>
-                                    <tr><td class="grey--text">纬度</td><td>{{ telem.lat != null ? telem.lat.toFixed(8) : '--' }}</td></tr>
-                                    <tr><td class="grey--text">经度</td><td>{{ telem.lon != null ? telem.lon.toFixed(8) : '--' }}</td></tr>
-                                    <tr><td class="grey--text">海拔</td><td>{{ fmtM(telem.alt_m) }} m</td></tr>
-                                    <tr><td class="grey--text">相对高度</td><td>{{ fmtM(telem.rel_alt) }} m</td></tr>
-                                    <tr><td class="grey--text">AHRS2高度</td><td>{{ fmtM(telem.altitude) }} m</td></tr>
-                                    <tr><td class="grey--text">航向</td><td>{{ fmtDeg(telem.heading) }}°</td></tr>
-                                    <tr><td class="grey--text">Roll/Pitch/Yaw</td><td>{{ fmtDeg(telem.roll) }}° / {{ fmtDeg(telem.pitch) }}° / {{ fmtDeg(telem.yaw) }}°</td></tr>
-                                    <tr><td class="grey--text">速度 X/Y/Z</td><td>{{ fmtMs(telem.vx) }}/{{ fmtMs(telem.vy) }}/{{ fmtMs(telem.vz) }} m/s</td></tr>
-                                </tbody>
-                            </v-simple-table>
-                        </v-card>
-                    </v-col>
-                </v-row>
+      <!-- DR 位置 + 加速度 -->
+      <v-col cols="12" sm="4">
+        <v-card outlined>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+            <span style="font-size:13px;font-weight:bold">航位推算位置（局部坐标）</span>
+            <v-btn small color="warning" @click="resetDR">
+              <v-icon left small>mdi-restart</v-icon>重置归零
+            </v-btn>
+          </div>
+          <v-row no-gutters>
+            <v-col class="val-box" cols="4"><div class="dr-big">{{ f2(telem.dr_x) }}</div><div class="dr-lbl">X（东）m</div></v-col>
+            <v-col class="val-box" cols="4"><div class="dr-big">{{ f2(telem.dr_y) }}</div><div class="dr-lbl">Y（北）m</div></v-col>
+            <v-col class="val-box" cols="4"><div class="dr-big">{{ f2(telem.dr_z) }}</div><div class="dr-lbl">Z（天）m</div></v-col>
+          </v-row>
+          <v-divider class="my-2"></v-divider>
+          <v-row no-gutters>
+            <v-col class="val-box"><div class="val-num">{{ f3(telem.dr_speed) }}</div><div class="val-lbl">速度 m/s</div></v-col>
+            <v-col class="val-box"><div class="val-num">{{ f2(telem.dr_dist) }}</div><div class="val-lbl">路程 m</div></v-col>
+            <v-col class="val-box"><div class="val-num">{{ fmtTime(telem.dr_time) }}</div><div class="val-lbl">积分时长</div></v-col>
+          </v-row>
+          <v-divider class="my-2"></v-divider>
+          <div style="font-size:11px;color:#888;margin-bottom:4px">世界系加速度（去重力后）</div>
+          <v-row no-gutters>
+            <v-col class="val-box"><div class="val-num" style="color:#ef9a9a">{{ f3(telem.ax_w) }}</div><div class="val-lbl">aX m/s²</div></v-col>
+            <v-col class="val-box"><div class="val-num" style="color:#a5d6a7">{{ f3(telem.ay_w) }}</div><div class="val-lbl">aY m/s²</div></v-col>
+            <v-col class="val-box"><div class="val-num" style="color:#90caf9">{{ f3(telem.az_w) }}</div><div class="val-lbl">aZ m/s²</div></v-col>
+          </v-row>
+          <div style="font-size:11px;color:#888;margin-top:6px;margin-bottom:4px">机体系加速度（原始）</div>
+          <v-row no-gutters>
+            <v-col class="val-box"><div class="val-num" style="font-size:12px;color:#ef9a9a">{{ f3(telem.ax_raw) }}</div><div class="val-lbl">aX_b</div></v-col>
+            <v-col class="val-box"><div class="val-num" style="font-size:12px;color:#a5d6a7">{{ f3(telem.ay_raw) }}</div><div class="val-lbl">aY_b</div></v-col>
+            <v-col class="val-box"><div class="val-num" style="font-size:12px;color:#90caf9">{{ f3(telem.az_raw) }}</div><div class="val-lbl">aZ_b</div></v-col>
+          </v-row>
+        </v-card>
+      </v-col>
 
-                <!-- ── 串口终端 ────────────────────────────────────────── -->
-                <v-row class="mt-2">
-                    <v-col>
-                        <v-card outlined>
-                            <v-row align="center" no-gutters class="px-2 pb-2">
-                                <v-col>
-                                    <v-text-field v-model="filterText" label="过滤关键词" dense outlined hide-details clearable prepend-inner-icon="mdi-magnify"></v-text-field>
-                                </v-col>
-                                <v-col cols="auto" class="ml-3">
-                                    <v-switch v-model="autoScroll" label="自动滚动" dense hide-details class="mt-0"></v-switch>
-                                </v-col>
-                                <v-col cols="auto" class="ml-3">
-                                    <v-switch v-model="showTs" label="时间戳" dense hide-details class="mt-0"></v-switch>
-                                </v-col>
-                                <v-col cols="auto" class="ml-3">
-                                    <v-btn small text @click="exportLog">
-                                        <v-icon left small>mdi-download</v-icon>导出日志
-                                    </v-btn>
-                                </v-col>
-                            </v-row>
-                            <div class="terminal" ref="terminal">
-                                <div v-if="filteredLines.length === 0" style="color:#555;text-align:center;padding-top:140px;">
-                                    {{ enabled ? '等待串口数据…' : '串口读取已停用' }}
-                                </div>
-                                <div v-for="line in filteredLines" :key="line.index" class="log-line" :class="{ 'is-error': /error|fail/i.test(line.raw) }">
-                                    <span class="log-idx">{{ line.index }}</span>
-                                    <span v-if="showTs" class="log-ts">{{ line.timestamp }}</span>
-                                    <span class="log-text">{{ line.raw }}</span>
-                                </div>
-                            </div>
-                        </v-card>
-                    </v-col>
-                </v-row>
+      <!-- 串口配置 -->
+      <v-col cols="12" sm="4">
+        <v-card outlined>
+          <div style="font-size:13px;font-weight:bold;margin-bottom:10px">串口配置</div>
+          <v-switch v-model="enabled" inset dense :label="`串口：${enabled?'启用':'停用'}`" @change="setEnabled($event)"></v-switch>
+          <v-select v-model="selectedPort" :items="portItems" item-text="label" item-value="device" label="串口" outlined dense class="mb-2"></v-select>
+          <v-select v-model="selectedBaud" :items="baudRates" label="波特率" outlined dense class="mb-2"></v-select>
+          <v-btn block color="primary" small @click="applyConfig"><v-icon left small>mdi-check</v-icon>应用</v-btn>
+          <v-btn block color="error" small class="mt-2" @click="clearHistory"><v-icon left small>mdi-delete</v-icon>清空串口记录</v-btn>
+          <v-btn block text small class="mt-2" @click="exportLog"><v-icon left small>mdi-download</v-icon>导出串口日志</v-btn>
+          <v-btn block text small class="mt-1" @click="exportTrackCSV"><v-icon left small>mdi-map-marker-path</v-icon>导出轨迹 CSV</v-btn>
+        </v-card>
+      </v-col>
+    </v-row>
 
-                <v-snackbar v-model="snack.show" :color="snack.color" timeout="3000" top>{{ snack.text }}</v-snackbar>
-            </v-container>
-        </v-main>
-    </v-app>
+    <!-- ── 第二行：轨迹地图 ─────────────────────────────────── -->
+    <v-row class="mt-2">
+      <v-col>
+        <v-card outlined>
+          <!-- 工具栏 -->
+          <v-row align="center" no-gutters class="mb-2" wrap>
+            <v-tabs v-model="viewTab" dense class="view-tabs" style="max-width:280px">
+              <v-tab>XY 俯视</v-tab>
+              <v-tab>XZ 侧视</v-tab>
+              <v-tab>YZ 正视</v-tab>
+            </v-tabs>
+            <v-btn small class="ml-2" @click="fitView"><v-icon left small>mdi-fit-to-page</v-icon>适应</v-btn>
+            <v-btn small class="ml-2" @click="resetDR" color="warning"><v-icon left small>mdi-restart</v-icon>重置 DR</v-btn>
+            <v-switch v-model="showArrows" dense hide-details label="航向箭头" class="mt-0 ml-3"></v-switch>
+            <v-switch v-model="showGrid"   dense hide-details label="网格"    class="mt-0 ml-3"></v-switch>
+            <span style="font-family:monospace;font-size:11px;color:#80cbc4;margin-left:auto">
+              当前 X={{ f2(telem.dr_x) }}  Y={{ f2(telem.dr_y) }}  Z={{ f2(telem.dr_z) }} m
+            </span>
+          </v-row>
+
+          <canvas id="trackCanvas" :height="mapH"
+            @wheel.prevent="onWheel"
+            @mousedown="onMD" @mousemove="onMM" @mouseup="onMU" @mouseleave="onMU"
+            @touchstart.prevent="onTS" @touchmove.prevent="onTM" @touchend="onTE">
+          </canvas>
+
+          <div style="font-size:11px;color:#555;margin-top:4px">
+            坐标原点 = 重置时的位置 &nbsp;·&nbsp;
+            颜色渐变：紫→青 = 时间顺序 &nbsp;·&nbsp;
+            滚轮缩放 · 拖拽平移
+            <span v-if="viewTab===0">（XY 平面：X=东，Y=北）</span>
+            <span v-if="viewTab===1">（XZ 平面：X=东，Z=高度）</span>
+            <span v-if="viewTab===2">（YZ 平面：Y=北，Z=高度）</span>
+          </div>
+        </v-card>
+      </v-col>
+    </v-row>
+
+    <!-- ── 第三行：串口终端 ─────────────────────────────────── -->
+    <v-row class="mt-2">
+      <v-col>
+        <v-card outlined>
+          <v-row align="center" no-gutters class="px-1 pb-2">
+            <v-col>
+              <v-text-field v-model="filterText" label="过滤关键词" dense outlined hide-details clearable prepend-inner-icon="mdi-magnify"></v-text-field>
+            </v-col>
+            <v-col cols="auto" class="ml-2"><v-switch v-model="autoScroll" label="自动滚动" dense hide-details class="mt-0"></v-switch></v-col>
+            <v-col cols="auto" class="ml-2"><v-switch v-model="showTs" label="时间戳" dense hide-details class="mt-0"></v-switch></v-col>
+          </v-row>
+          <div class="terminal" ref="terminal">
+            <div v-if="filteredLines.length===0" style="color:#555;text-align:center;padding-top:100px">
+              {{ enabled ? '等待串口数据…' : '串口读取已停用' }}
+            </div>
+            <div v-for="line in filteredLines" :key="line.index" class="log-line" :class="{'is-error':/error|fail/i.test(line.raw)}">
+              <span class="log-idx">{{ line.index }}</span>
+              <span v-if="showTs" class="log-ts">{{ line.timestamp }}</span>
+              <span class="log-text">{{ line.raw }}</span>
+            </div>
+          </div>
+        </v-card>
+      </v-col>
+    </v-row>
+
+    <v-snackbar v-model="snack.show" :color="snack.color" timeout="3000" top>{{ snack.text }}</v-snackbar>
+</v-container>
+</v-main>
+</v-app>
 </div>
 
 <script src="/static/js/vue.js"></script>
 <script src="/static/js/vuetify.js"></script>
 <script src="/static/js/axios.min.js"></script>
-
 <script>
-Vue.config.devtools = true
-
-// ── 颜色辅助 ────────────────────────────────────────────────────────────────
-function trackColor(ratio) {
-    // ratio 0→1: 紫 #6200ea → 青 #00e5ff
-    const r = Math.round(98  + (0   - 98)  * ratio)
-    const g = Math.round(0   + (229 - 0)   * ratio)
-    const b = Math.round(234 + (255 - 234)  * ratio)
-    return `rgb(${r},${g},${b})`
+// ── 颜色辅助 ─────────────────────────────────────────────────────────────────
+function trackColor(t) {
+    // t 0→1 : 紫(98,0,234) → 青(0,229,255)
+    return `rgb(${~~(98-98*t)},${~~(229*t)},${~~(234+21*t)})`
 }
 
-// ── Vue 实例 ─────────────────────────────────────────────────────────────────
 new Vue({
     el: '#app',
-    vuetify: new Vuetify({ theme: { dark: true } }),
+    vuetify: new Vuetify({ theme:{ dark:true } }),
 
-    data() {
-        return {
-            // 串口状态
-            status: { connected: false, enabled: true, port: '', baud: 115200, error: null, total_lines: 0, total_bytes: 0, uptime: 0 },
-            lines: [], lastIndex: 0, exportLimit: 8000,
-            enabled: true, selectedPort: '/dev/ttyAMA0', selectedBaud: 115200,
-            portItems: [], baudRates: [9600,19200,38400,57600,115200,230400,460800,921600],
-            filterText: '', autoScroll: true, showTs: true,
+    data() { return {
+        // 串口
+        status:{ connected:false,enabled:true,port:'',baud:115200,error:null,total_lines:0,total_bytes:0,uptime:0 },
+        lines:[], lastIndex:0,
+        enabled:true, selectedPort:'/dev/ttyAMA0', selectedBaud:115200,
+        portItems:[], baudRates:[9600,19200,38400,57600,115200,230400,460800,921600],
+        filterText:'', autoScroll:true, showTs:true,
 
-            // 遥测
-            telem: {},
-            mavConnected: false,
-            lastTelemTs: 0,
+        // 遥测
+        telem:{}, mavOk:false,
 
-            // 轨迹
-            trackPoints: [],    // [{lat,lon,alt,heading,roll,pitch,yaw,ts}]
-            lastTrackTs: 0,
-            showHeading: true,
+        // 轨迹
+        trackPts:[], lastTrackTs:0,
 
-            // 地图视图
-            mapScale: 1,        // 像素/度（初始值，自动适应后更新）
-            mapOffsetX: 0,      // 画布中心对应的经度偏移（像素）
-            mapOffsetY: 0,
-            mapInitialized: false,
-            mapDragging: false,
-            mapDragStart: null,
-            mapDragOffset: null,
-            mapHeight: 420,
+        // 地图
+        viewTab:0,            // 0=XY 1=XZ 2=YZ
+        mapH:440,
+        mapScale:50,          // px/m
+        mapOX:0, mapOY:0,     // 画布偏移（原点对应画布坐标）
+        mapInited:false,
+        mapDrag:false, mapDS:null, mapDO:null,
+        showArrows:true, showGrid:true,
 
-            snack: { show: false, text: '', color: 'success' },
-        }
-    },
+        snack:{ show:false,text:'',color:'success' },
+    }},
 
     computed: {
         filteredLines() {
@@ -332,435 +306,351 @@ new Vue({
 
     watch: {
         filteredLines() {
-            if (this.autoScroll) {
-                this.$nextTick(() => {
-                    const el = this.$refs.terminal
-                    if (el) el.scrollTop = el.scrollHeight
-                })
-            }
+            if (this.autoScroll) this.$nextTick(() => {
+                const el = this.$refs.terminal; if (el) el.scrollTop = el.scrollHeight
+            })
         },
-        trackPoints() { this.drawTrack() },
-        telem:        { deep: true, handler() { this.drawHorizon(); this.drawCompass(); this.drawTrack() } },
-        showHeading() { this.drawTrack() },
+        telem:   { deep:true, handler() { this.drawHorizon(); this.drawCompass(); this.renderTrack() } },
+        trackPts()  { this.renderTrack() },
+        viewTab()   { this.mapInited = false; this.renderTrack() },
+        showArrows(){ this.renderTrack() },
+        showGrid()  { this.renderTrack() },
     },
 
     methods: {
         // ══ 串口 ══════════════════════════════════════════════════════════════
-        updateStatus() {
-            axios.get('/get_status', { timeout: 2000 }).then(res => {
-                const d = res.data
-                this.status = d
-                this.enabled = d.enabled
-                if (d.total_lines < this.lastIndex) { this.lines = []; this.lastIndex = 0 }
-                this.fetchNewLines()
-                if (this.selectedPort === '' && d.port) this.selectedPort = d.port
-            }).catch(() => { this.status.connected = false })
+        pollStatus() {
+            axios.get('/get_status',{timeout:2000}).then(r=>{
+                const d=r.data; this.status=d; this.enabled=d.enabled
+                if(d.total_lines < this.lastIndex){ this.lines=[]; this.lastIndex=0 }
+                this.fetchLines()
+                if(!this.selectedPort && d.port) this.selectedPort=d.port
+            }).catch(()=>{ this.status.connected=false })
         },
-
-        fetchNewLines() {
-            axios.get(`/get_history_since/${this.lastIndex}`, { timeout: 3000 }).then(res => {
-                const newLines = res.data || []
-                if (!newLines.length) return
-                this.lines.push(...newLines)
-                if (this.lines.length > 8000) this.lines = this.lines.slice(-8000)
-                this.lastIndex = this.lines[this.lines.length - 1].index
-            }).catch(() => {})
+        fetchLines() {
+            axios.get(`/get_history_since/${this.lastIndex}`,{timeout:3000}).then(r=>{
+                const nl=r.data||[]; if(!nl.length) return
+                this.lines.push(...nl)
+                if(this.lines.length>8000) this.lines=this.lines.slice(-8000)
+                this.lastIndex=this.lines[this.lines.length-1].index
+            }).catch(()=>{})
         },
-
         loadPorts() {
-            axios.get('/list_ports', { timeout: 2000 }).then(res => {
-                this.portItems = res.data.map(p => ({ device: p.device, label: `${p.device}  (${p.description})` }))
-            }).catch(() => {})
+            axios.get('/list_ports',{timeout:2000}).then(r=>{
+                this.portItems=r.data.map(p=>({device:p.device,label:`${p.device} (${p.description})`}))
+            }).catch(()=>{})
         },
-
-        setEnabled(val) { axios.get(`/enable/${val}`).then(() => this.toast(val ? '已启用' : '已停用')).catch(() => this.toast('失败', 'error')) },
-        applyConfig() {
+        setEnabled(v){ axios.get(`/enable/${v}`).then(()=>this.toast(v?'已启用':'已停用')) },
+        applyConfig(){
             axios.get(`/set_port/${encodeURIComponent(this.selectedPort)}`)
-            axios.get(`/set_baud/${this.selectedBaud}`).then(() => this.toast(`已应用 ${this.selectedPort}@${this.selectedBaud}`)).catch(() => this.toast('失败', 'error'))
+            axios.get(`/set_baud/${this.selectedBaud}`).then(()=>this.toast('已应用'))
         },
-        clearHistory() {
-            axios.get('/clear_history').then(() => { this.lines = []; this.lastIndex = 0; this.toast('已清空') })
+        clearHistory(){
+            axios.get('/clear_history').then(()=>{ this.lines=[]; this.lastIndex=0; this.toast('已清空') })
         },
-        exportLog() {
-            axios.get(`/export_history?limit=${this.exportLimit}`, { timeout: 10000 }).then(res => {
-                const text = (res.data || []).map(l => `[${l.timestamp}] ${l.raw}`).join('\n')
-                this._download(text, `serial_${new Date().toISOString().slice(0,19)}.txt`, 'text/plain')
-                this.toast(`已导出 ${res.data.length} 行`)
-            }).catch(() => this.toast('导出失败', 'error'))
+        exportLog(){
+            axios.get(`/export_history?limit=30000`,{timeout:10000}).then(r=>{
+                const txt=(r.data||[]).map(l=>`[${l.timestamp}] ${l.raw}`).join('\n')
+                this._dl(txt,`serial_${now()}.txt`,'text/plain')
+                this.toast(`已导出 ${r.data.length} 行`)
+            })
         },
 
         // ══ 遥测 ══════════════════════════════════════════════════════════════
-        updateTelemetry() {
-            axios.get('/get_telemetry', { timeout: 2000 }).then(res => {
-                const d = res.data || {}
-                this.telem = d
-                this.mavConnected = !!d.ts && (Date.now()/1000 - d.ts) < 5
-                this.lastTelemTs = d.ts || 0
-            }).catch(() => { this.mavConnected = false })
+        pollTelemetry() {
+            axios.get('/get_telemetry',{timeout:1500}).then(r=>{
+                this.telem=r.data||{}
+                this.mavOk=!!r.data.ts && (Date.now()/1000-r.data.ts)<5
+            }).catch(()=>{ this.mavOk=false })
         },
-
-        updateTrack() {
-            const since = this.lastTrackTs
-            axios.get(`/get_track_since/${since}`, { timeout: 3000 }).then(res => {
-                const pts = res.data || []
-                if (!pts.length) return
-                this.trackPoints.push(...pts)
-                if (this.trackPoints.length > 5000) this.trackPoints = this.trackPoints.slice(-5000)
-                this.lastTrackTs = pts[pts.length - 1].ts
-            }).catch(() => {})
+        pollTrack() {
+            axios.get(`/get_track_since/${this.lastTrackTs}`,{timeout:2000}).then(r=>{
+                const pts=r.data||[]; if(!pts.length) return
+                this.trackPts.push(...pts)
+                if(this.trackPts.length>8000) this.trackPts=this.trackPts.slice(-8000)
+                this.lastTrackTs=pts[pts.length-1].ts
+            }).catch(()=>{})
         },
-
-        clearTrack() {
-            axios.get('/clear_track').then(() => {
-                this.trackPoints = []
-                this.lastTrackTs = 0
-                this.mapInitialized = false
-                this.drawTrack()
-                this.toast('轨迹已清空')
+        resetDR() {
+            axios.get('/reset_dr').then(()=>{
+                this.trackPts=[]; this.lastTrackTs=0
+                this.mapInited=false; this.renderTrack()
+                this.toast('航位推算已重置归零','info')
             })
         },
-
         exportTrackCSV() {
-            if (!this.trackPoints.length) { this.toast('暂无轨迹数据', 'warning'); return }
-            const header = 'timestamp,lat,lon,alt_m,heading,roll_rad,pitch_rad,yaw_rad\n'
-            const rows = this.trackPoints.map(p =>
-                `${p.ts.toFixed(3)},${p.lat.toFixed(8)},${p.lon.toFixed(8)},${(p.alt||0).toFixed(3)},${(p.heading||0).toFixed(2)},${(p.roll||0).toFixed(5)},${(p.pitch||0).toFixed(5)},${(p.yaw||0).toFixed(5)}`
+            if(!this.trackPts.length){ this.toast('暂无轨迹','warning'); return }
+            const h='timestamp,x_m,y_m,z_m,depth_m,speed_m_s,roll_rad,pitch_rad,yaw_rad\n'
+            const rows=this.trackPts.map(p=>
+                `${p.ts.toFixed(3)},${p.x},${p.y},${p.z},${p.depth||0},${p.speed||0},${p.roll||0},${p.pitch||0},${p.yaw||0}`
             ).join('\n')
-            this._download(header + rows, `track_${new Date().toISOString().slice(0,19)}.csv`, 'text/csv')
-            this.toast(`已导出 ${this.trackPoints.length} 个轨迹点`)
+            this._dl(h+rows,`track_${now()}.csv`,'text/csv')
+            this.toast(`已导出 ${this.trackPts.length} 个轨迹点`)
         },
 
-        fitTrack() {
-            this.mapInitialized = false
-            this.drawTrack()
+        // ══ 轨迹渲染 ══════════════════════════════════════════════════════════
+        // 根据 viewTab 选取投影坐标
+        _proj(p) {
+            if (this.viewTab === 0) return { h: p.x, v: p.y }   // XY
+            if (this.viewTab === 1) return { h: p.x, v: p.z }   // XZ
+            return                         { h: p.y, v: p.z }   // YZ
+        },
+        // 轨迹点中航向向量（XY 平面用 yaw，其余用 pitch/roll 近似方向）
+        _hdg(p) {
+            if (this.viewTab === 0) return p.yaw   || 0    // yaw 顺时针从北
+            if (this.viewTab === 1) return -(p.pitch || 0) // 向前-向上
+            return -(p.roll  || 0)                         // 向前-向右
         },
 
-        // ══ 地图绘制 ══════════════════════════════════════════════════════════
-        drawTrack() {
-            const canvas = document.getElementById('trackCanvas')
-            if (!canvas) return
-            const W = canvas.clientWidth || canvas.width
-            canvas.width = W
-            const H = this.mapHeight
-            canvas.height = H
-            const ctx = canvas.getContext('2d')
-            ctx.clearRect(0, 0, W, H)
+        fitView() { this.mapInited=false; this.renderTrack() },
 
-            // 背景格网
-            ctx.fillStyle = '#1a1a2e'
-            ctx.fillRect(0, 0, W, H)
-            ctx.strokeStyle = '#2a2a4a'
-            ctx.lineWidth = 1
-            const gridStep = 60
-            for (let x = 0; x < W; x += gridStep) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke() }
-            for (let y = 0; y < H; y += gridStep) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke() }
+        renderTrack() {
+            const canvas=document.getElementById('trackCanvas'); if(!canvas) return
+            const W=canvas.clientWidth||600; canvas.width=W
+            canvas.height=this.mapH
+            const H=this.mapH
+            const ctx=canvas.getContext('2d')
+            ctx.clearRect(0,0,W,H)
 
-            const pts = this.trackPoints
-            if (pts.length === 0) {
-                // 无数据提示
-                ctx.fillStyle = '#444'
-                ctx.font = '14px Roboto, sans-serif'
-                ctx.textAlign = 'center'
-                ctx.fillText('暂无轨迹数据 — 等待 MAVLink2REST 位置信息…', W/2, H/2 - 10)
-                ctx.font = '12px Roboto, sans-serif'
-                ctx.fillStyle = '#333'
-                ctx.fillText('确认飞控已连接，且 GLOBAL_POSITION_INT 消息中 lat/lon 非零', W/2, H/2 + 16)
-                // 绘制当前位置（即使lat/lon=0也显示十字）
-                this._drawCurrentMarker(ctx, W/2, H/2)
+            // 背景
+            ctx.fillStyle='#0d1117'; ctx.fillRect(0,0,W,H)
+
+            const pts=this.trackPts
+
+            // 自动适应视图
+            if(!this.mapInited || pts.length===1){
+                if(pts.length>=2){
+                    const hs=pts.map(p=>this._proj(p).h), vs=pts.map(p=>this._proj(p).v)
+                    const mnH=Math.min(...hs),mxH=Math.max(...hs),mnV=Math.min(...vs),mxV=Math.max(...vs)
+                    const dH=mxH-mnH||1, dV=mxV-mnV||1
+                    const pad=0.2
+                    this.mapScale=Math.min(W/(dH*(1+pad*2)), H/(dV*(1+pad*2)))
+                    this.mapOX=W/2-((mnH+mxH)/2)*this.mapScale
+                    this.mapOY=H/2+((mnV+mxV)/2)*this.mapScale
+                } else {
+                    this.mapScale=50
+                    this.mapOX=W/2; this.mapOY=H/2
+                }
+                this.mapInited=true
+            }
+
+            const toC=(h,v)=>({ x: h*this.mapScale+this.mapOX, y: -v*this.mapScale+this.mapOY })
+
+            // 网格
+            if(this.showGrid){
+                // 计算合适的网格间距（目标约60px一格）
+                const raw=60/this.mapScale
+                const exp=Math.pow(10, Math.floor(Math.log10(raw)))
+                const gStep=[exp, exp*2, exp*5, exp*10].find(s=>s*this.mapScale>=40)||exp*10
+
+                // 计算视野内范围
+                const left=(0-this.mapOX)/this.mapScale, right=(W-this.mapOX)/this.mapScale
+                const top=(H-this.mapOY)/(-this.mapScale), bot=(-this.mapOY)/(-this.mapScale)
+                // 但 y 翻转，重算
+                const vTop=(0 -this.mapOY)/(-this.mapScale), vBot=(H-this.mapOY)/(-this.mapScale)
+
+                ctx.strokeStyle='#1c2333'; ctx.lineWidth=1
+                const startH=Math.floor(left/gStep)*gStep
+                for(let h=startH; h<=right+gStep; h+=gStep){
+                    const cx=toC(h,0).x
+                    ctx.beginPath(); ctx.moveTo(cx,0); ctx.lineTo(cx,H); ctx.stroke()
+                    ctx.fillStyle='#2a3040'; ctx.font='9px sans-serif'; ctx.textAlign='center'
+                    ctx.fillText(h.toFixed(h>=100||h<=-100?0:1)+'m', cx, H-4)
+                }
+                const startV=Math.floor(Math.min(vTop,vBot)/gStep)*gStep
+                for(let v=startV; v<=Math.max(vTop,vBot)+gStep; v+=gStep){
+                    const cy=toC(0,v).y
+                    ctx.beginPath(); ctx.moveTo(0,cy); ctx.lineTo(W,cy); ctx.stroke()
+                    ctx.fillStyle='#2a3040'; ctx.textAlign='left'
+                    ctx.fillText(v.toFixed(v>=100||v<=-100?0:1)+'m', 2, cy-2)
+                }
+
+                // 轴线
+                const ox=toC(0,0); ctx.strokeStyle='#2d4060'; ctx.lineWidth=1.5
+                ctx.beginPath(); ctx.moveTo(ox.x,0); ctx.lineTo(ox.x,H); ctx.stroke()
+                ctx.beginPath(); ctx.moveTo(0,ox.y); ctx.lineTo(W,ox.y); ctx.stroke()
+            }
+
+            // 轴标签
+            ctx.fillStyle='#4a90d9'; ctx.font='bold 11px sans-serif'; ctx.textAlign='left'
+            const axH = this.viewTab===0?'X(东)':this.viewTab===1?'X(东)':'Y(北)'
+            const axV = this.viewTab===0?'Y(北)':'Z(高)'
+            ctx.fillText(`→ ${axH}`, W-55, H-6)
+            ctx.save(); ctx.translate(14,50); ctx.rotate(-Math.PI/2); ctx.fillText(`↑ ${axV}`,0,0); ctx.restore()
+
+            if(pts.length===0){
+                ctx.fillStyle='#445'; ctx.font='14px Roboto,sans-serif'; ctx.textAlign='center'
+                ctx.fillText('暂无轨迹 — 等待 IMU 数据…', W/2, H/2-10)
+                ctx.font='11px Roboto,sans-serif'; ctx.fillStyle='#334'
+                ctx.fillText('后端以 10Hz 采集 SCALED_IMU2 + ATTITUDE 进行航位推算', W/2, H/2+14)
+                this._drawCurMarker(ctx,W/2,H/2)
                 return
             }
 
-            // 自动适应视图
-            if (!this.mapInitialized || pts.length === 1) {
-                const lats = pts.map(p => p.lat)
-                const lons = pts.map(p => p.lon)
-                const minLat = Math.min(...lats), maxLat = Math.max(...lats)
-                const minLon = Math.min(...lons), maxLon = Math.max(...lons)
-                const dLat = maxLat - minLat || 0.001
-                const dLon = maxLon - minLon || 0.001
-                const padding = 0.15
-                const scaleX = W / (dLon * (1 + padding * 2))
-                const scaleY = H / (dLat * (1 + padding * 2))
-                this.mapScale = Math.min(scaleX, scaleY)
-                const cLat = (minLat + maxLat) / 2
-                const cLon = (minLon + maxLon) / 2
-                this.mapOffsetX = W/2 - cLon * this.mapScale
-                this.mapOffsetY = H/2 + cLat * this.mapScale
-                this.mapInitialized = true
+            // 轨迹线
+            for(let i=1;i<pts.length;i++){
+                const ratio=i/pts.length
+                const a=this._proj(pts[i-1]), b=this._proj(pts[i])
+                const ca=toC(a.h,a.v), cb=toC(b.h,b.v)
+                ctx.beginPath(); ctx.moveTo(ca.x,ca.y); ctx.lineTo(cb.x,cb.y)
+                ctx.strokeStyle=trackColor(ratio); ctx.lineWidth=2; ctx.stroke()
             }
 
-            const toCanvas = (lat, lon) => ({
-                x: lon * this.mapScale + this.mapOffsetX,
-                y: -lat * this.mapScale + this.mapOffsetY,
-            })
+            // 轨迹点 + 航向箭头
+            for(let i=0;i<pts.length;i++){
+                const ratio=i/pts.length
+                const pr=this._proj(pts[i]); const cp=toC(pr.h,pr.v)
+                ctx.beginPath(); ctx.arc(cp.x,cp.y,2.5,0,Math.PI*2)
+                ctx.fillStyle=trackColor(ratio); ctx.fill()
 
-            // 绘制轨迹线
-            ctx.lineWidth = 2
-            for (let i = 1; i < pts.length; i++) {
-                const ratio = i / pts.length
-                const a = toCanvas(pts[i-1].lat, pts[i-1].lon)
-                const b = toCanvas(pts[i].lat, pts[i].lon)
-                ctx.beginPath()
-                ctx.strokeStyle = trackColor(ratio)
-                ctx.moveTo(a.x, a.y)
-                ctx.lineTo(b.x, b.y)
-                ctx.stroke()
-            }
-
-            // 绘制轨迹点
-            for (let i = 0; i < pts.length; i++) {
-                const ratio = i / pts.length
-                const p = toCanvas(pts[i].lat, pts[i].lon)
-                ctx.beginPath()
-                ctx.arc(p.x, p.y, 3, 0, Math.PI*2)
-                ctx.fillStyle = trackColor(ratio)
-                ctx.fill()
-
-                // 航向箭头（每5个点一个）
-                if (this.showHeading && i % 5 === 0 && pts[i].heading != null) {
-                    const hdgRad = pts[i].heading * Math.PI / 180 - Math.PI/2
-                    const len = 10
-                    ctx.beginPath()
-                    ctx.strokeStyle = 'rgba(255,200,0,0.7)'
-                    ctx.lineWidth = 1.5
-                    ctx.moveTo(p.x, p.y)
-                    ctx.lineTo(p.x + Math.cos(hdgRad)*len, p.y + Math.sin(hdgRad)*len)
-                    ctx.stroke()
+                if(this.showArrows && i%8===0){
+                    const hdg=this._hdg(pts[i])
+                    const ax=cp.x+Math.sin(hdg)*10, ay=cp.y-Math.cos(hdg)*10
+                    ctx.beginPath(); ctx.moveTo(cp.x,cp.y); ctx.lineTo(ax,ay)
+                    ctx.strokeStyle='rgba(255,193,7,0.65)'; ctx.lineWidth=1.5; ctx.stroke()
+                    ctx.beginPath(); ctx.arc(ax,ay,2,0,Math.PI*2)
+                    ctx.fillStyle='rgba(255,193,7,0.65)'; ctx.fill()
                 }
             }
 
-            // 起点标记
-            const start = toCanvas(pts[0].lat, pts[0].lon)
-            ctx.beginPath()
-            ctx.arc(start.x, start.y, 6, 0, Math.PI*2)
-            ctx.fillStyle = '#76ff03'
-            ctx.fill()
-            ctx.fillStyle = '#fff'
-            ctx.font = 'bold 9px sans-serif'
-            ctx.textAlign = 'center'
-            ctx.fillText('S', start.x, start.y + 3)
+            // 起点
+            const sp=this._proj(pts[0]); const sc=toC(sp.h,sp.v)
+            ctx.beginPath(); ctx.arc(sc.x,sc.y,7,0,Math.PI*2)
+            ctx.fillStyle='#76ff03'; ctx.fill()
+            ctx.fillStyle='#000'; ctx.font='bold 8px sans-serif'; ctx.textAlign='center'
+            ctx.fillText('S',sc.x,sc.y+3)
 
-            // 当前位置（蓝色脉冲圆）
-            const cur = pts[pts.length - 1]
-            const cp = toCanvas(cur.lat, cur.lon)
-            ctx.beginPath()
-            ctx.arc(cp.x, cp.y, 9, 0, Math.PI*2)
-            ctx.strokeStyle = 'rgba(0,229,255,0.4)'
-            ctx.lineWidth = 3
-            ctx.stroke()
-            this._drawCurrentMarker(ctx, cp.x, cp.y)
+            // 当前位置
+            const lp=this._proj(pts[pts.length-1]); const lc=toC(lp.h,lp.v)
+            ctx.beginPath(); ctx.arc(lc.x,lc.y,10,0,Math.PI*2)
+            ctx.strokeStyle='rgba(0,229,255,0.3)'; ctx.lineWidth=4; ctx.stroke()
+            this._drawCurMarker(ctx,lc.x,lc.y)
 
             // 比例尺
-            this._drawScale(ctx, W, H)
+            this._drawScale(ctx,W,H)
         },
 
-        _drawCurrentMarker(ctx, x, y) {
-            ctx.beginPath()
-            ctx.arc(x, y, 5, 0, Math.PI*2)
-            ctx.fillStyle = '#00e5ff'
-            ctx.fill()
-            ctx.strokeStyle = '#fff'
-            ctx.lineWidth = 1.5
-            ctx.stroke()
+        _drawCurMarker(ctx,x,y){
+            ctx.beginPath(); ctx.arc(x,y,5,0,Math.PI*2)
+            ctx.fillStyle='#00e5ff'; ctx.fill()
+            ctx.strokeStyle='#fff'; ctx.lineWidth=1.5; ctx.stroke()
         },
-
-        _drawScale(ctx, W, H) {
-            if (this.mapScale <= 0) return
-            // 计算合适的比例尺长度（目标约80px）
-            const degPerPx = 1 / this.mapScale
-            // 1度≈111km，换算米
-            const mPerPx = degPerPx * 111000
-            let scaleM = 80 * mPerPx
-            // 取整到好看的数字
-            const nice = [0.1,0.2,0.5,1,2,5,10,20,50,100,200,500,1000,2000,5000,10000]
-            scaleM = nice.reduce((a, b) => Math.abs(b - scaleM) < Math.abs(a - scaleM) ? b : a)
-            const scaleLen = scaleM / mPerPx
-
-            const sx = 16, sy = H - 24
-            ctx.fillStyle = 'rgba(0,0,0,0.5)'
-            ctx.fillRect(sx - 2, sy - 12, scaleLen + 4, 18)
-            ctx.strokeStyle = '#80cbc4'
-            ctx.lineWidth = 2
-            ctx.beginPath()
-            ctx.moveTo(sx, sy); ctx.lineTo(sx + scaleLen, sy)
-            ctx.moveTo(sx, sy - 5); ctx.lineTo(sx, sy + 2)
-            ctx.moveTo(sx + scaleLen, sy - 5); ctx.lineTo(sx + scaleLen, sy + 2)
-            ctx.stroke()
-            ctx.fillStyle = '#80cbc4'
-            ctx.font = '10px sans-serif'
-            ctx.textAlign = 'center'
-            ctx.fillText(scaleM >= 1000 ? `${scaleM/1000}km` : `${scaleM}m`, sx + scaleLen/2, sy - 2)
+        _drawScale(ctx,W,H){
+            const pxPerM=this.mapScale; if(pxPerM<=0) return
+            const nice=[0.05,0.1,0.2,0.5,1,2,5,10,20,50,100,200,500,1000]
+            const target=80/pxPerM
+            const scaleM=nice.reduce((a,b)=>Math.abs(b-target)<Math.abs(a-target)?b:a)
+            const scaleLen=scaleM*pxPerM
+            const sx=16,sy=H-26
+            ctx.fillStyle='rgba(0,0,0,.55)'; ctx.fillRect(sx-2,sy-14,scaleLen+4,20)
+            ctx.strokeStyle='#80cbc4'; ctx.lineWidth=2
+            ctx.beginPath(); ctx.moveTo(sx,sy); ctx.lineTo(sx+scaleLen,sy)
+            ctx.moveTo(sx,sy-5); ctx.lineTo(sx,sy+2)
+            ctx.moveTo(sx+scaleLen,sy-5); ctx.lineTo(sx+scaleLen,sy+2); ctx.stroke()
+            ctx.fillStyle='#80cbc4'; ctx.font='10px sans-serif'; ctx.textAlign='center'
+            ctx.fillText(scaleM>=1000?`${scaleM/1000}km`:`${scaleM}m`, sx+scaleLen/2, sy-2)
         },
 
         // ══ 人工地平仪 ════════════════════════════════════════════════════════
-        drawHorizon() {
-            const canvas = document.getElementById('horizonCanvas')
-            if (!canvas) return
-            const ctx = canvas.getContext('2d')
-            const W = 100, H = 100, cx = 50, cy = 50, r = 48
-            ctx.clearRect(0, 0, W, H)
-            const roll  = this.telem.roll  || 0
-            const pitch = this.telem.pitch || 0
-
+        drawHorizon(){
+            const c=document.getElementById('horizonCanvas'); if(!c) return
+            const ctx=c.getContext('2d'),W=110,H=110,cx=55,cy=55,r=52
+            ctx.clearRect(0,0,W,H)
+            const roll=this.telem.roll||0, pitch=this.telem.pitch||0
             ctx.save()
-            ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI*2); ctx.clip()
-            ctx.translate(cx, cy)
-            ctx.rotate(-roll)
-            const pitchPx = pitch * (r / (Math.PI/4))
-            // 天空
-            ctx.fillStyle = '#1565c0'
-            ctx.fillRect(-r, -r - pitchPx, r*2, r + pitchPx + 2)
-            // 地面
-            ctx.fillStyle = '#4e342e'
-            ctx.fillRect(-r, -pitchPx, r*2, r + pitchPx + 2)
-            // 地平线
-            ctx.strokeStyle = '#fff'
-            ctx.lineWidth = 2
-            ctx.beginPath(); ctx.moveTo(-r, -pitchPx); ctx.lineTo(r, -pitchPx); ctx.stroke()
+            ctx.beginPath(); ctx.arc(cx,cy,r,0,Math.PI*2); ctx.clip()
+            ctx.translate(cx,cy); ctx.rotate(-roll)
+            const pp=pitch*(r/(Math.PI/4))
+            ctx.fillStyle='#1565c0'; ctx.fillRect(-r,-r-pp,r*2,r+pp+2)
+            ctx.fillStyle='#4e342e'; ctx.fillRect(-r,-pp,r*2,r+pp+2)
+            ctx.strokeStyle='#fff'; ctx.lineWidth=2
+            ctx.beginPath(); ctx.moveTo(-r,-pp); ctx.lineTo(r,-pp); ctx.stroke()
             ctx.restore()
-
             // 飞机符号
-            ctx.strokeStyle = '#ffd600'
-            ctx.lineWidth = 2
-            ctx.beginPath(); ctx.moveTo(cx - 18, cy); ctx.lineTo(cx - 6, cy); ctx.stroke()
-            ctx.beginPath(); ctx.moveTo(cx + 6,  cy); ctx.lineTo(cx + 18, cy); ctx.stroke()
-            ctx.beginPath(); ctx.arc(cx, cy, 3, 0, Math.PI*2); ctx.fillStyle='#ffd600'; ctx.fill()
-
+            ctx.strokeStyle='#ffd600'; ctx.lineWidth=2
+            ctx.beginPath(); ctx.moveTo(cx-20,cy); ctx.lineTo(cx-7,cy); ctx.stroke()
+            ctx.beginPath(); ctx.moveTo(cx+7,cy);  ctx.lineTo(cx+20,cy); ctx.stroke()
+            ctx.beginPath(); ctx.arc(cx,cy,3,0,Math.PI*2)
+            ctx.fillStyle='#ffd600'; ctx.fill()
             // 边框
-            ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI*2)
-            ctx.strokeStyle = '#555'; ctx.lineWidth = 2; ctx.stroke()
+            ctx.beginPath(); ctx.arc(cx,cy,r,0,Math.PI*2)
+            ctx.strokeStyle='#555'; ctx.lineWidth=2; ctx.stroke()
         },
 
         // ══ 罗盘 ═════════════════════════════════════════════════════════════
-        drawCompass() {
-            const canvas = document.getElementById('compassCanvas')
-            if (!canvas) return
-            const ctx = canvas.getContext('2d')
-            const W = 100, H = 100, cx = 50, cy = 50, r = 46
-            ctx.clearRect(0, 0, W, H)
-
-            ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI*2)
-            ctx.fillStyle = '#1a1a2e'; ctx.fill()
-            ctx.strokeStyle = '#444'; ctx.lineWidth = 2; ctx.stroke()
-
-            const yaw = (this.telem.yaw || 0) * 180 / Math.PI
-            // 刻度
-            for (let i = 0; i < 36; i++) {
-                const angle = (i * 10 - yaw) * Math.PI / 180
-                const inner = i % 9 === 0 ? r - 12 : r - 7
+        drawCompass(){
+            const c=document.getElementById('compassCanvas'); if(!c) return
+            const ctx=c.getContext('2d'),W=110,H=110,cx=55,cy=55,r=50
+            ctx.clearRect(0,0,W,H)
+            ctx.beginPath(); ctx.arc(cx,cy,r,0,Math.PI*2)
+            ctx.fillStyle='#1a1a2e'; ctx.fill()
+            ctx.strokeStyle='#444'; ctx.lineWidth=2; ctx.stroke()
+            const yawDeg=(this.telem.yaw||0)*180/Math.PI
+            for(let i=0;i<36;i++){
+                const angle=(i*10-yawDeg)*Math.PI/180
+                const inner=i%9===0?r-13:r-7
                 ctx.beginPath()
-                ctx.moveTo(cx + Math.cos(angle) * inner, cy + Math.sin(angle) * inner)
-                ctx.lineTo(cx + Math.cos(angle) * (r - 2), cy + Math.sin(angle) * (r - 2))
-                ctx.strokeStyle = i % 9 === 0 ? '#80cbc4' : '#555'
-                ctx.lineWidth = i % 9 === 0 ? 2 : 1
-                ctx.stroke()
+                ctx.moveTo(cx+Math.cos(angle)*inner,cy+Math.sin(angle)*inner)
+                ctx.lineTo(cx+Math.cos(angle)*(r-2),cy+Math.sin(angle)*(r-2))
+                ctx.strokeStyle=i%9===0?'#80cbc4':'#555'
+                ctx.lineWidth=i%9===0?2:1; ctx.stroke()
             }
-            // 方位字母
-            const dirs = [['N', 0], ['E', 90], ['S', 180], ['W', 270]]
-            dirs.forEach(([label, deg]) => {
-                const angle = (deg - yaw) * Math.PI / 180 - Math.PI/2
-                const tx = cx + Math.cos(angle) * (r - 18)
-                const ty = cy + Math.sin(angle) * (r - 18)
-                ctx.fillStyle = label === 'N' ? '#f44336' : '#80cbc4'
-                ctx.font = `bold ${label === 'N' ? 13 : 11}px sans-serif`
-                ctx.textAlign = 'center'
-                ctx.textBaseline = 'middle'
-                ctx.fillText(label, tx, ty)
+            [['N',0],['E',90],['S',180],['W',270]].forEach(([lb,deg])=>{
+                const a=(deg-yawDeg)*Math.PI/180-Math.PI/2
+                const tx=cx+Math.cos(a)*(r-18), ty=cy+Math.sin(a)*(r-18)
+                ctx.fillStyle=lb==='N'?'#f44336':'#80cbc4'
+                ctx.font=`bold ${lb==='N'?13:11}px sans-serif`
+                ctx.textAlign='center'; ctx.textBaseline='middle'
+                ctx.fillText(lb,tx,ty)
             })
-            // 中心指针（始终朝上 = 航行方向）
-            ctx.beginPath()
-            ctx.moveTo(cx, cy - r + 6)
-            ctx.lineTo(cx - 5, cy + 5)
-            ctx.lineTo(cx + 5, cy + 5)
-            ctx.closePath()
-            ctx.fillStyle = '#f44336'
-            ctx.fill()
-            // 航向数值
-            ctx.fillStyle = '#fff'
-            ctx.font = 'bold 12px monospace'
-            ctx.textAlign = 'center'
-            ctx.textBaseline = 'middle'
-            ctx.fillText(this.fmtDeg(yaw) + '°', cx, cy + 1)
+            ctx.beginPath(); ctx.moveTo(cx,cy-r+7); ctx.lineTo(cx-5,cy+6); ctx.lineTo(cx+5,cy+6)
+            ctx.closePath(); ctx.fillStyle='#f44336'; ctx.fill()
+            ctx.fillStyle='#fff'; ctx.font='bold 11px monospace'
+            ctx.textAlign='center'; ctx.textBaseline='middle'
+            ctx.fillText(((yawDeg%360+360)%360).toFixed(1)+'°',cx,cy+1)
         },
 
         // ══ 地图交互 ══════════════════════════════════════════════════════════
-        onWheel(e) {
-            const factor = e.deltaY < 0 ? 1.15 : 0.87
-            const canvas = document.getElementById('trackCanvas')
-            const rect = canvas.getBoundingClientRect()
-            const mx = e.clientX - rect.left
-            const my = e.clientY - rect.top
-            this.mapOffsetX = mx + (this.mapOffsetX - mx) * factor
-            this.mapOffsetY = my + (this.mapOffsetY - my) * factor
-            this.mapScale *= factor
-            this.drawTrack()
+        onWheel(e){
+            const f=e.deltaY<0?1.15:0.87
+            const c=document.getElementById('trackCanvas'), r=c.getBoundingClientRect()
+            const mx=e.clientX-r.left, my=e.clientY-r.top
+            this.mapOX=mx+(this.mapOX-mx)*f; this.mapOY=my+(this.mapOY-my)*f
+            this.mapScale*=f; this.renderTrack()
         },
-        onMouseDown(e) { this.mapDragging = true; this.mapDragStart = { x: e.clientX, y: e.clientY }; this.mapDragOffset = { x: this.mapOffsetX, y: this.mapOffsetY } },
-        onMouseMove(e) {
-            if (!this.mapDragging) return
-            this.mapOffsetX = this.mapDragOffset.x + (e.clientX - this.mapDragStart.x)
-            this.mapOffsetY = this.mapDragOffset.y + (e.clientY - this.mapDragStart.y)
-            this.drawTrack()
-        },
-        onMouseUp() { this.mapDragging = false },
-        onTouchStart(e) {
-            if (e.touches.length === 1) {
-                this.mapDragging = true
-                this.mapDragStart = { x: e.touches[0].clientX, y: e.touches[0].clientY }
-                this.mapDragOffset = { x: this.mapOffsetX, y: this.mapOffsetY }
-            }
-        },
-        onTouchMove(e) {
-            if (!this.mapDragging || e.touches.length !== 1) return
-            this.mapOffsetX = this.mapDragOffset.x + (e.touches[0].clientX - this.mapDragStart.x)
-            this.mapOffsetY = this.mapDragOffset.y + (e.touches[0].clientY - this.mapDragStart.y)
-            this.drawTrack()
-        },
-        onTouchEnd() { this.mapDragging = false },
+        onMD(e){ this.mapDrag=true; this.mapDS={x:e.clientX,y:e.clientY}; this.mapDO={x:this.mapOX,y:this.mapOY} },
+        onMM(e){ if(!this.mapDrag) return; this.mapOX=this.mapDO.x+(e.clientX-this.mapDS.x); this.mapOY=this.mapDO.y+(e.clientY-this.mapDS.y); this.renderTrack() },
+        onMU(){ this.mapDrag=false },
+        onTS(e){ if(e.touches.length!==1) return; this.mapDrag=true; this.mapDS={x:e.touches[0].clientX,y:e.touches[0].clientY}; this.mapDO={x:this.mapOX,y:this.mapOY} },
+        onTM(e){ if(!this.mapDrag||e.touches.length!==1) return; this.mapOX=this.mapDO.x+(e.touches[0].clientX-this.mapDS.x); this.mapOY=this.mapDO.y+(e.touches[0].clientY-this.mapDS.y); this.renderTrack() },
+        onTE(){ this.mapDrag=false },
 
-        // ══ EKF 条形图 ════════════════════════════════════════════════════════
-        ekfBarStyle(variance, goodColor, badColor) {
-            const v = variance || 0
-            const pct = Math.min(v / 2.0 * 100, 100)
-            const color = pct > 50 ? badColor : goodColor
-            return `width:${pct}%; background:${color};`
-        },
+        // ══ EKF 条 ════════════════════════════════════════════════════════════
+        ekfStyle(v,gc,bc){ const p=Math.min((v||0)/2*100,100); return `width:${p}%;background:${p>50?bc:gc}` },
 
         // ══ 格式化 ════════════════════════════════════════════════════════════
-        fmtDeg(v) { return v != null ? (v * 180 / Math.PI).toFixed(1) : '--' },
-        fmtM(v)   { return v != null ? v.toFixed(2) : '--' },
-        fmtMs(...args) {
-            if (args.length === 1) return args[0] != null ? args[0].toFixed(2) : '--'
-            const [vx=0, vy=0, vz=0] = args
-            return (Math.sqrt(vx**2 + vy**2 + vz**2)).toFixed(2)
-        },
-        formatBytes(n = 0) { if (n < 1024) return n + ' B'; if (n < 1048576) return (n/1024).toFixed(1)+' KB'; return (n/1048576).toFixed(2)+' MB' },
-        formatUptime(s = 0) { const h = Math.floor(s/3600), m = Math.floor((s%3600)/60), sec = Math.floor(s%60); return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}` },
-        toast(text, color = 'success') { this.snack = { show: true, text, color } },
-        _download(content, filename, type) {
-            const blob = new Blob([content], { type })
-            const a = document.createElement('a')
-            a.href = URL.createObjectURL(blob)
-            a.download = filename; a.click()
-        },
+        fmtDeg(v){ return v!=null?(v*180/Math.PI).toFixed(1):'--' },
+        f2(v){ return v!=null?Number(v).toFixed(2):'--' },
+        f3(v){ return v!=null?Number(v).toFixed(3):'--' },
+        f4(v){ return v!=null?Number(v).toFixed(4):'--' },
+        fmtTime(s){ if(s==null) return '--'; const m=Math.floor(s/60); const sec=Math.floor(s%60); return `${m}:${String(sec).padStart(2,'0')}` },
+        fmtUptime(s=0){ const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),sec=Math.floor(s%60); return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}` },
+        formatBytes(n=0){ if(n<1024) return n+' B'; if(n<1048576) return (n/1024).toFixed(1)+' KB'; return (n/1048576).toFixed(2)+' MB' },
+        toast(t,c='success'){ this.snack={show:true,text:t,color:c} },
+        _dl(content,name,type){ const b=new Blob([content],{type}),a=document.createElement('a'); a.href=URL.createObjectURL(b); a.download=name; a.click() },
     },
 
-    mounted() {
-        this.loadPorts()
-        this.updateStatus()
-        this.updateTelemetry()
-        this.updateTrack()
-
-        setInterval(this.updateStatus,    1000)
-        setInterval(this.loadPorts,      10000)
-        setInterval(this.updateTelemetry,  200)   // 5Hz 遥测
-        setInterval(this.updateTrack,      500)   // 2Hz 轨迹增量
-
-        // 窗口 resize 重绘
-        window.addEventListener('resize', () => this.drawTrack())
-        this.$nextTick(() => { this.drawHorizon(); this.drawCompass(); this.drawTrack() })
+    mounted(){
+        this.loadPorts(); this.pollStatus(); this.pollTelemetry(); this.pollTrack()
+        setInterval(this.pollStatus,    1000)
+        setInterval(this.loadPorts,    10000)
+        setInterval(this.pollTelemetry,  150)   // ~7Hz
+        setInterval(this.pollTrack,      300)   // ~3Hz
+        window.addEventListener('resize',()=>this.renderTrack())
+        this.$nextTick(()=>{ this.drawHorizon(); this.drawCompass(); this.renderTrack() })
     },
 })
-</script>
 
+function now(){ return new Date().toISOString().slice(0,19).replace('T','_') }
+</script>
 </html>
