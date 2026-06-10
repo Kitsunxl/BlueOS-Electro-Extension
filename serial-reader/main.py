@@ -95,7 +95,7 @@ def _fetch(msg: str):
 
 
 def _fetch_imu():
-    for msg in ("SCALED_IMU2", "SCALED_IMU", "RAW_IMU"):
+    for msg in ("SCALED_IMU", "SCALED_IMU2", "RAW_IMU"):
         imu = _fetch(msg)
         if imu:
             return msg, imu
@@ -194,6 +194,11 @@ def _dr_loop():
             telem_update["ax_raw"] = round(imu.get("xacc", 0) * scale, 4)
             telem_update["ay_raw"] = round(imu.get("yacc", 0) * scale, 4)
             telem_update["az_raw"] = round(imu.get("zacc", 0) * scale, 4)
+            telem_update["acc_norm_raw"] = round(math.sqrt(
+                telem_update["ax_raw"]**2 +
+                telem_update["ay_raw"]**2 +
+                telem_update["az_raw"]**2
+            ), 4)
             gyro_scale = _imu_gyro_scale(imu_msg)
             telem_update["gx_raw"] = round(imu.get("xgyro", 0) * gyro_scale, 5)
             telem_update["gy_raw"] = round(imu.get("ygyro", 0) * gyro_scale, 5)
