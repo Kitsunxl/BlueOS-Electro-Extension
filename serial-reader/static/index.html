@@ -217,11 +217,13 @@
             <v-col class="val-box"><div class="val-num" style="color:#a5d6a7">{{ f3(telem.ay_w) }}</div><div class="val-lbl">aY m/s²</div></v-col>
             <v-col class="val-box"><div class="val-num" style="color:#90caf9">{{ f3(telem.az_w) }}</div><div class="val-lbl">aZ m/s²</div></v-col>
           </v-row>
-          <div style="font-size:11px;color:#667085;margin-top:6px;margin-bottom:4px">机体系加速度（原始）</div>
+          <div style="font-size:11px;color:#667085;margin-top:6px;margin-bottom:4px">
+            IMU原始轴加速度 <span style="color:#98a2b3">映射 {{ telem.imu_body_axis_map || '--' }}</span>
+          </div>
           <v-row no-gutters>
-            <v-col class="val-box" cols="3"><div class="val-num" style="font-size:12px;color:#ef9a9a">{{ f3(telem.ax_raw) }}</div><div class="val-lbl">aX_b</div></v-col>
-            <v-col class="val-box" cols="3"><div class="val-num" style="font-size:12px;color:#a5d6a7">{{ f3(telem.ay_raw) }}</div><div class="val-lbl">aY_b</div></v-col>
-            <v-col class="val-box" cols="3"><div class="val-num" style="font-size:12px;color:#90caf9">{{ f3(telem.az_raw) }}</div><div class="val-lbl">aZ_b</div></v-col>
+            <v-col class="val-box" cols="3"><div class="val-num" style="font-size:12px;color:#ef9a9a">{{ f3(telem.ax_raw) }}</div><div class="val-lbl">aX_imu</div></v-col>
+            <v-col class="val-box" cols="3"><div class="val-num" style="font-size:12px;color:#a5d6a7">{{ f3(telem.ay_raw) }}</div><div class="val-lbl">aY_imu</div></v-col>
+            <v-col class="val-box" cols="3"><div class="val-num" style="font-size:12px;color:#90caf9">{{ f3(telem.az_raw) }}</div><div class="val-lbl">aZ_imu</div></v-col>
             <v-col class="val-box" cols="3"><div class="val-num" style="font-size:12px;color:#0f766e">{{ f3(telem.acc_norm_raw) }}</div><div class="val-lbl">|a|</div></v-col>
           </v-row>
         </v-card>

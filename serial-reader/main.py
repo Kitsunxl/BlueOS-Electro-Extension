@@ -24,10 +24,11 @@ MAVLINK_HOSTS  = [
 MAVLINK_BASES  = [f"http://{host}{MAVLINK_PATH}" for host in dict.fromkeys(MAVLINK_HOSTS) if host]
 MAX_TRACK_PTS  = 8000
 DR_HZ          = 10          # 航位推算频率 Hz
-ACCEL_DEADBAND = 0.05        # m/s²，低于此值视为静止噪声归零
-STILL_THRESH   = 0.08        # m/s²，连续静止判定阈值（归零速度用）
+ACCEL_DEADBAND = 0.12        # m/s²，低于此值视为静止噪声归零
+STILL_THRESH   = 0.18        # m/s²，连续静止判定阈值（归零速度用）
 STILL_COUNT    = 30          # 连续 N 帧静止则速度归零
 G              = 9.80665     # 重力加速度
+IMU_BODY_AXIS_MAP = os.environ.get("IMU_BODY_AXIS_MAP", "x,z,y")
 
 # ── 共享状态 ─────────────────────────────────────────────────────────────────
 _telem: dict        = {}
@@ -114,6 +115,102 @@ def _imu_gyro_scale(_msg: str):
     return 0.001
 
 
+def _calibrated_imu_accel(imu: dict):
+    """
+    Convert raw MAVLink IMU acceleration counts to m/s².
+
+    SCALED_IMU and RAW_IMU are documented as milli-g, but some setups expose
+    a static norm that is not exactly 1000 counts. During the initial/reset
+    still period, normalize the measured static norm to 1g and freeze that
+    scale for subsequent integration.
+    """
+    global _accel_scale, _accel_scale_samples
+
+    x_count = float(imu.get("xacc", 0))
+    y_count = float(imu.get("yacc", 0))
+    z_count = float(imu.get("zacc", 0))
+    norm_counts = math.sqrt(x_count**2 + y_count**2 + z_count**2)
+
+    if _accel_scale is None and norm_counts > 1:
+        _accel_scale_samples.append(norm_counts)
+        avg_counts = sum(_accel_scale_samples) / len(_accel_scale_samples)
+        scale = G / avg_counts
+        if len(_accel_scale_samples) >= GRAVITY_CAL_SAMPLES:
+            _accel_scale = scale
+    else:
+        scale = _imu_accel_scale("")
+
+    ax = x_count * scale
+    ay = y_count * scale
+    az = z_count * scale
+    return {
+        "ax": ax,
+        "ay": ay,
+        "az": az,
+        "norm": math.sqrt(ax**2 + ay**2 + az**2),
+        "scale": scale,
+        "scale_calibrated": _accel_scale is not None,
+        "norm_counts": norm_counts,
+    }
+
+
+def _apply_deadband(v: float) -> float:
+    return v if abs(v) >= ACCEL_DEADBAND else 0.0
+
+
+def _axis_component(axis: str, accel: dict) -> float:
+    axis = axis.strip().lower()
+    sign = -1.0 if axis.startswith("-") else 1.0
+    name = axis[1:] if axis.startswith("-") else axis
+    if name == "x":
+        return sign * accel["ax"]
+    if name == "y":
+        return sign * accel["ay"]
+    if name == "z":
+        return sign * accel["az"]
+    return 0.0
+
+
+def _imu_to_body_accel(accel: dict):
+    """
+    Map raw IMU sensor axes into the vehicle body axes used by ATTITUDE.
+    Default x,z,y matches the observed SCALED_IMU2 static gravity on raw Y.
+    Override with IMU_BODY_AXIS_MAP, e.g. "x,y,z" or "x,z,-y".
+    """
+    axes = [part.strip() for part in IMU_BODY_AXIS_MAP.split(",")]
+    if len(axes) != 3:
+        axes = ["x", "z", "y"]
+    return (
+        _axis_component(axes[0], accel),
+        _axis_component(axes[1], accel),
+        _axis_component(axes[2], accel),
+    )
+
+
+def _linear_accel_from_gravity_bias(ax_g: float, ay_g: float, az_g: float):
+    """
+    Remove the still gravity/bias baseline from the rotated acceleration.
+    Returns linear acceleration and whether the baseline is ready.
+    """
+    global _gravity_bias, _gravity_samples
+
+    if _gravity_bias is None:
+        _gravity_samples.append((ax_g, ay_g, az_g))
+        if len(_gravity_samples) >= GRAVITY_CAL_SAMPLES:
+            n = len(_gravity_samples)
+            _gravity_bias = (
+                sum(p[0] for p in _gravity_samples) / n,
+                sum(p[1] for p in _gravity_samples) / n,
+                sum(p[2] for p in _gravity_samples) / n,
+            )
+        return 0.0, 0.0, 0.0, False
+
+    ax = _apply_deadband(ax_g - _gravity_bias[0])
+    ay = _apply_deadband(ay_g - _gravity_bias[1])
+    az = _apply_deadband(az_g - _gravity_bias[2])
+    return ax, ay, az, True
+
+
 # ── 旋转矩阵：机体 → 世界（NED） ────────────────────────────────────────────
 
 def _body_to_world(ax_b, ay_b, az_b, roll, pitch, yaw):
@@ -168,6 +265,7 @@ def _dr_loop():
         attitude = _fetch("ATTITUDE")
         ahrs2    = _fetch("AHRS2")
         ekf      = _fetch("EKF_STATUS_REPORT")
+        accel    = _calibrated_imu_accel(imu) if imu else None
 
         # ── 更新遥测快照 ──────────────────────────────────────────────────
         telem_update = {"ts": time.time()}
@@ -192,32 +290,18 @@ def _dr_loop():
             telem_update["ekf_pos_horiz"]     = round(ekf.get("pos_horiz_variance", 0), 4)
             telem_update["ekf_pos_vert"]      = round(ekf.get("pos_vert_variance",  0), 4)
         if imu:
-            # SCALED_IMU2: xacc/yacc/zacc 单位 mG，换算 m/s²
-            # RAW_IMU:      同上（ArduSub 统一用 mG）
-            raw_norm_counts = math.sqrt(
-                imu.get("xacc", 0)**2 +
-                imu.get("yacc", 0)**2 +
-                imu.get("zacc", 0)**2
-            )
-            if _accel_scale is None and raw_norm_counts > 1:
-                _accel_scale_samples.append(raw_norm_counts)
-                instant_scale = G / raw_norm_counts
-                if len(_accel_scale_samples) >= GRAVITY_CAL_SAMPLES:
-                    avg_counts = sum(_accel_scale_samples) / len(_accel_scale_samples)
-                    _accel_scale = G / avg_counts
-                scale = instant_scale
-            else:
-                scale = _imu_accel_scale(imu_msg)
-            telem_update["ax_raw"] = round(imu.get("xacc", 0) * scale, 4)
-            telem_update["ay_raw"] = round(imu.get("yacc", 0) * scale, 4)
-            telem_update["az_raw"] = round(imu.get("zacc", 0) * scale, 4)
-            telem_update["acc_norm_raw"] = round(math.sqrt(
-                telem_update["ax_raw"]**2 +
-                telem_update["ay_raw"]**2 +
-                telem_update["az_raw"]**2
-            ), 4)
-            telem_update["accel_scale"] = round(scale, 8)
-            telem_update["accel_scale_calibrated"] = _accel_scale is not None
+            ax_body, ay_body, az_body = _imu_to_body_accel(accel)
+            telem_update["ax_raw"] = round(accel["ax"], 4)
+            telem_update["ay_raw"] = round(accel["ay"], 4)
+            telem_update["az_raw"] = round(accel["az"], 4)
+            telem_update["ax_body"] = round(ax_body, 4)
+            telem_update["ay_body"] = round(ay_body, 4)
+            telem_update["az_body"] = round(az_body, 4)
+            telem_update["acc_norm_raw"] = round(accel["norm"], 4)
+            telem_update["accel_scale"] = round(accel["scale"], 8)
+            telem_update["accel_scale_calibrated"] = accel["scale_calibrated"]
+            telem_update["accel_norm_counts"] = round(accel["norm_counts"], 2)
+            telem_update["imu_body_axis_map"] = IMU_BODY_AXIS_MAP
             gyro_scale = _imu_gyro_scale(imu_msg)
             telem_update["gx_raw"] = round(imu.get("xgyro", 0) * gyro_scale, 5)
             telem_update["gy_raw"] = round(imu.get("ygyro", 0) * gyro_scale, 5)
@@ -227,44 +311,14 @@ def _dr_loop():
             _telem.update(telem_update)
 
         # ── 航位推算积分 ──────────────────────────────────────────────────
-        if imu and attitude:
-            raw_norm_counts = math.sqrt(
-                imu.get("xacc", 0)**2 +
-                imu.get("yacc", 0)**2 +
-                imu.get("zacc", 0)**2
-            )
-            if _accel_scale is None and raw_norm_counts > 1:
-                scale = G / raw_norm_counts
-            else:
-                scale = _imu_accel_scale(imu_msg)
-            ax_b = imu.get("xacc", 0) * scale
-            ay_b = imu.get("yacc", 0) * scale
-            az_b = imu.get("zacc", 0) * scale
-
+        if accel and attitude:
             roll  = attitude.get("roll",  0)
             pitch = attitude.get("pitch", 0)
             yaw   = attitude.get("yaw",   0)
 
-            ax_g, ay_g, az_g = _body_to_world(ax_b, ay_b, az_b, roll, pitch, yaw)
-
-            if _gravity_bias is None:
-                _gravity_samples.append((ax_g, ay_g, az_g))
-                if len(_gravity_samples) >= GRAVITY_CAL_SAMPLES:
-                    n = len(_gravity_samples)
-                    _gravity_bias = (
-                        sum(p[0] for p in _gravity_samples) / n,
-                        sum(p[1] for p in _gravity_samples) / n,
-                        sum(p[2] for p in _gravity_samples) / n,
-                    )
-                ax_w, ay_w, az_w = 0.0, 0.0, 0.0
-            else:
-                ax_w = ax_g - _gravity_bias[0]
-                ay_w = ay_g - _gravity_bias[1]
-                az_w = az_g - _gravity_bias[2]
-
-            # 去除极小噪声
-            def deadband(v): return v if abs(v) > ACCEL_DEADBAND else 0.0
-            ax_w, ay_w, az_w = deadband(ax_w), deadband(ay_w), deadband(az_w)
+            ax_body, ay_body, az_body = _imu_to_body_accel(accel)
+            ax_g, ay_g, az_g = _body_to_world(ax_body, ay_body, az_body, roll, pitch, yaw)
+            ax_w, ay_w, az_w, gravity_ready = _linear_accel_from_gravity_bias(ax_g, ay_g, az_g)
 
             with _dr_lock:
                 sf = _dr_state["still_frames"]
