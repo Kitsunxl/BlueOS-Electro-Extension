@@ -27,6 +27,8 @@ DR_HZ          = 10          # 航位推算频率 Hz
 ACCEL_DEADBAND = 0.12        # m/s²，低于此值视为静止噪声归零
 STILL_THRESH   = 0.18        # m/s²，连续静止判定阈值（归零速度用）
 STILL_COUNT    = 30          # 连续 N 帧静止则速度归零
+ACCEL_FILTER_ALPHA = 0.25     # 世界系线性加速度低通系数，越小越平滑
+ACCEL_JUMP_LIMIT   = 0.8      # m/s²，单帧最大允许跳变
 G              = 9.80665     # 重力加速度
 IMU_BODY_AXIS_MAP = os.environ.get("IMU_BODY_AXIS_MAP", "x,z,y")
 
@@ -56,6 +58,7 @@ _gravity_bias       = None                    # 世界系静止加速度基线
 _gravity_samples    = []
 _accel_scale        = None                    # raw accel count -> m/s²
 _accel_scale_samples = []
+_filtered_accel     = None                    # 世界系线性加速度滤波状态
 GRAVITY_CAL_SAMPLES = 30
 
 # ── MAVLink 拉取 ─────────────────────────────────────────────────────────────
@@ -158,6 +161,40 @@ def _apply_deadband(v: float) -> float:
     return v if abs(v) >= ACCEL_DEADBAND else 0.0
 
 
+def _clamp_delta(value: float, previous: float, limit: float) -> float:
+    delta = value - previous
+    if delta > limit:
+        return previous + limit
+    if delta < -limit:
+        return previous - limit
+    return value
+
+
+def _filter_linear_accel(ax: float, ay: float, az: float):
+    """
+    Suppress single-frame spikes in world-frame linear acceleration, then apply
+    an exponential moving average before the deadband and integration steps.
+    """
+    global _filtered_accel
+
+    if _filtered_accel is None:
+        _filtered_accel = (ax, ay, az)
+        return _apply_deadband(ax), _apply_deadband(ay), _apply_deadband(az)
+
+    px, py, pz = _filtered_accel
+    ax = _clamp_delta(ax, px, ACCEL_JUMP_LIMIT)
+    ay = _clamp_delta(ay, py, ACCEL_JUMP_LIMIT)
+    az = _clamp_delta(az, pz, ACCEL_JUMP_LIMIT)
+
+    alpha = ACCEL_FILTER_ALPHA
+    fx = px + alpha * (ax - px)
+    fy = py + alpha * (ay - py)
+    fz = pz + alpha * (az - pz)
+    _filtered_accel = (fx, fy, fz)
+
+    return _apply_deadband(fx), _apply_deadband(fy), _apply_deadband(fz)
+
+
 def _axis_component(axis: str, accel: dict) -> float:
     axis = axis.strip().lower()
     sign = -1.0 if axis.startswith("-") else 1.0
@@ -205,9 +242,9 @@ def _linear_accel_from_gravity_bias(ax_g: float, ay_g: float, az_g: float):
             )
         return 0.0, 0.0, 0.0, False
 
-    ax = _apply_deadband(ax_g - _gravity_bias[0])
-    ay = _apply_deadband(ay_g - _gravity_bias[1])
-    az = _apply_deadband(az_g - _gravity_bias[2])
+    ax = ax_g - _gravity_bias[0]
+    ay = ay_g - _gravity_bias[1]
+    az = az_g - _gravity_bias[2]
     return ax, ay, az, True
 
 
@@ -238,7 +275,7 @@ def _body_to_world(ax_b, ay_b, az_b, roll, pitch, yaw):
 # ── 航位推算主循环 ────────────────────────────────────────────────────────────
 
 def _dr_loop():
-    global _gravity_bias, _gravity_samples, _accel_scale, _accel_scale_samples
+    global _gravity_bias, _gravity_samples, _accel_scale, _accel_scale_samples, _filtered_accel
     dt       = 1.0 / DR_HZ
     last_ts  = None          # 上一条 RAW_IMU 的 time_usec，用于对齐实际 dt
 
@@ -256,6 +293,7 @@ def _dr_loop():
             _gravity_samples = []
             _accel_scale = None
             _accel_scale_samples = []
+            _filtered_accel = None
             last_ts = None
 
         t0 = time.time()
@@ -318,7 +356,8 @@ def _dr_loop():
 
             ax_body, ay_body, az_body = _imu_to_body_accel(accel)
             ax_g, ay_g, az_g = _body_to_world(ax_body, ay_body, az_body, roll, pitch, yaw)
-            ax_w, ay_w, az_w, gravity_ready = _linear_accel_from_gravity_bias(ax_g, ay_g, az_g)
+            ax_linear, ay_linear, az_linear, gravity_ready = _linear_accel_from_gravity_bias(ax_g, ay_g, az_g)
+            ax_w, ay_w, az_w = _filter_linear_accel(ax_linear, ay_linear, az_linear)
 
             with _dr_lock:
                 sf = _dr_state["still_frames"]
@@ -369,7 +408,10 @@ def _dr_loop():
                     "dr_time":  round(_dr_state["running_time"], 1),
                     "drift_warn": dw,
                     "ax_w": round(ax_w, 4), "ay_w": round(ay_w, 4), "az_w": round(az_w, 4),
+                    "ax_w_raw": round(ax_linear, 4), "ay_w_raw": round(ay_linear, 4), "az_w_raw": round(az_linear, 4),
                     "ax_g": round(ax_g, 4), "ay_g": round(ay_g, 4), "az_g": round(az_g, 4),
+                    "accel_filter_alpha": ACCEL_FILTER_ALPHA,
+                    "accel_jump_limit": ACCEL_JUMP_LIMIT,
                     "gravity_calibrated": _gravity_bias is not None,
                     "gravity_cal_samples": len(_gravity_samples),
                     "gravity_bias": [round(v, 4) for v in _gravity_bias] if _gravity_bias else None,
