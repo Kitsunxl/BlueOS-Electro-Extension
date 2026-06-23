@@ -1,7 +1,7 @@
 <html>
 <head>
     <title>Serial Monitor + 航位推算</title>
-    <link href="https://fonts.googleapis.com/css?family=Roboto:100,300,400,500,700,900" rel="stylesheet">
+    <!-- 离线 ROV 无外网：不再外链 Google Fonts，统一回退到系统 sans-serif -->
     <link href="/static/css/materialdesignicons.min.css" rel="stylesheet">
     <link href="/static/css/vuetify.min.css" rel="stylesheet">
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, minimal-ui">
@@ -360,9 +360,11 @@ new Vue({
 
     computed: {
         filteredLines() {
-            if (!this.filterText) return this.lines
-            const kw = this.filterText.toLowerCase()
-            return this.lines.filter(l => l.raw.toLowerCase().includes(kw))
+            const base = !this.filterText
+                ? this.lines
+                : this.lines.filter(l => l.raw.toLowerCase().includes(this.filterText.toLowerCase()))
+            // 只渲染最后 500 行，避免把上千条 DOM 节点全部塞进终端拖慢页面
+            return base.length > 500 ? base.slice(-500) : base
         },
     },
 
@@ -372,11 +374,13 @@ new Vue({
                 const el = this.$refs.terminal; if (el) el.scrollTop = el.scrollHeight
             })
         },
-        telem:   { deep:true, handler() { this.drawHorizon(); this.drawCompass(); this.renderTrack() } },
-        trackPts()  { this.renderTrack() },
-        viewTab()   { this.mapInited = false; this.renderTrack() },
-        showArrows(){ this.renderTrack() },
-        showGrid()  { this.renderTrack() },
+        // 姿态仪/罗盘很轻量：遥测一变即重画（浅层 watch，不再触发整条轨迹重绘）
+        telem()     { this.drawHorizon(); this.drawCompass() },
+        // 轨迹重绘较重：只置脏标记，由 rAF 循环按显示刷新率合并后重绘
+        trackPts()  { this._trackDirty = true },
+        viewTab()   { this.mapInited = false; this._trackDirty = true },
+        showArrows(){ this._trackDirty = true },
+        showGrid()  { this._trackDirty = true },
     },
 
     methods: {
@@ -436,7 +440,7 @@ new Vue({
         resetDR() {
             axios.get('/reset_dr').then(()=>{
                 this.trackPts=[]; this.lastTrackTs=0
-                this.mapInited=false; this.renderTrack()
+                this.mapInited=false; this._trackDirty=true
                 this.toast('航位推算已重置归零','info')
             })
         },
@@ -464,12 +468,14 @@ new Vue({
             return -(p.roll  || 0)                         // 向前-向右
         },
 
-        fitView() { this.mapInited=false; this.renderTrack() },
+        fitView() { this.mapInited=false; this._trackDirty=true },
 
         renderTrack() {
             const canvas=document.getElementById('trackCanvas'); if(!canvas) return
-            const W=canvas.clientWidth||600; canvas.width=W
-            canvas.height=this.mapH
+            const W=canvas.clientWidth||600
+            // 只在尺寸变化时设 width/height：给 canvas.width 赋值会重置上下文并触发清空/重排
+            if(canvas.width!==W) canvas.width=W
+            if(canvas.height!==this.mapH) canvas.height=this.mapH
             const H=this.mapH
             const ctx=canvas.getContext('2d')
             ctx.clearRect(0,0,W,H)
@@ -678,13 +684,13 @@ new Vue({
             const c=document.getElementById('trackCanvas'), r=c.getBoundingClientRect()
             const mx=e.clientX-r.left, my=e.clientY-r.top
             this.mapOX=mx+(this.mapOX-mx)*f; this.mapOY=my+(this.mapOY-my)*f
-            this.mapScale*=f; this.renderTrack()
+            this.mapScale*=f; this._trackDirty=true
         },
         onMD(e){ this.mapDrag=true; this.mapDS={x:e.clientX,y:e.clientY}; this.mapDO={x:this.mapOX,y:this.mapOY} },
-        onMM(e){ if(!this.mapDrag) return; this.mapOX=this.mapDO.x+(e.clientX-this.mapDS.x); this.mapOY=this.mapDO.y+(e.clientY-this.mapDS.y); this.renderTrack() },
+        onMM(e){ if(!this.mapDrag) return; this.mapOX=this.mapDO.x+(e.clientX-this.mapDS.x); this.mapOY=this.mapDO.y+(e.clientY-this.mapDS.y); this._trackDirty=true },
         onMU(){ this.mapDrag=false },
         onTS(e){ if(e.touches.length!==1) return; this.mapDrag=true; this.mapDS={x:e.touches[0].clientX,y:e.touches[0].clientY}; this.mapDO={x:this.mapOX,y:this.mapOY} },
-        onTM(e){ if(!this.mapDrag||e.touches.length!==1) return; this.mapOX=this.mapDO.x+(e.touches[0].clientX-this.mapDS.x); this.mapOY=this.mapDO.y+(e.touches[0].clientY-this.mapDS.y); this.renderTrack() },
+        onTM(e){ if(!this.mapDrag||e.touches.length!==1) return; this.mapOX=this.mapDO.x+(e.touches[0].clientX-this.mapDS.x); this.mapOY=this.mapDO.y+(e.touches[0].clientY-this.mapDS.y); this._trackDirty=true },
         onTE(){ this.mapDrag=false },
 
         // ══ EKF 条 ════════════════════════════════════════════════════════════
@@ -709,13 +715,19 @@ new Vue({
     },
 
     mounted(){
+        this._trackDirty = true
         this.loadPorts(); this.pollStatus(); this.pollTelemetry(); this.pollTrack()
         setInterval(this.pollStatus,    1000)
         setInterval(this.loadPorts,    10000)
         setInterval(this.pollTelemetry,  150)   // ~7Hz
         setInterval(this.pollTrack,      300)   // ~3Hz
-        window.addEventListener('resize',()=>this.renderTrack())
-        this.$nextTick(()=>{ this.drawHorizon(); this.drawCompass(); this.renderTrack() })
+        window.addEventListener('resize',()=>{ this._trackDirty=true })
+        // rAF 渲染循环：仅在置脏时重绘轨迹，按显示刷新率合并（替代每次遥测都全量重绘）
+        const loop=()=>{
+            if(this._trackDirty){ this._trackDirty=false; this.renderTrack() }
+            this._rafId=requestAnimationFrame(loop)
+        }
+        this.$nextTick(()=>{ this.drawHorizon(); this.drawCompass(); loop() })
     },
 })
 

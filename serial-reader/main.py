@@ -31,6 +31,8 @@ ACCEL_FILTER_ALPHA = 0.25     # 世界系线性加速度低通系数，越小越
 ACCEL_JUMP_LIMIT   = 0.8      # m/s²，单帧最大允许跳变
 G              = 9.80665     # 重力加速度
 IMU_BODY_AXIS_MAP = os.environ.get("IMU_BODY_AXIS_MAP", "x,z,y")
+DT_MIN, DT_MAX     = 0.01, 0.5     # 真实 dt 钳位（s），抑制拉取抖动/卡顿造成的积分失真
+STILL_BIAS_ALPHA   = 0.01          # 静止窗口内重力/零偏基线的在线重估系数
 
 # ── 共享状态 ─────────────────────────────────────────────────────────────────
 _telem: dict        = {}
@@ -100,8 +102,15 @@ def _fetch(msg: str):
     return None
 
 
-def _fetch_imu():
-    for msg in ("SCALED_IMU", "SCALED_IMU2", "RAW_IMU"):
+def _fetch_imu(pref: str = None):
+    """优先尝试已锁定的 IMU 源 pref，避免每圈都从头试 3 种消息。"""
+    order = []
+    if pref:
+        order.append(pref)
+    for msg in ("SCALED_IMU2", "SCALED_IMU", "RAW_IMU"):
+        if msg not in order:
+            order.append(msg)
+    for msg in order:
         imu = _fetch(msg)
         if imu:
             return msg, imu
@@ -272,12 +281,41 @@ def _body_to_world(ax_b, ay_b, az_b, roll, pitch, yaw):
 
     return ax_w, ay_w, az_w
 
+def _ned_world_to_enu(ax_n, ay_n, az_n):
+    """世界系 NED(北,东,下) → ENU(东,北,上)，与前端 X东/Y北/Z天 标注一致。"""
+    return ay_n, ax_n, -az_n
+
+
+def _append_track(x, y, z, attitude, ahrs2, spd, running_time):
+    """按 DR_HZ/2 降采样记录一个轨迹点（ENU 坐标）。"""
+    if int(running_time * DR_HZ) % 2 != 0:
+        return
+    depth = ahrs2.get("altitude", 0) if ahrs2 else 0.0
+    point = {
+        "ts":    time.time(),
+        "x":     round(x, 3),
+        "y":     round(y, 3),
+        "z":     round(z, 3),
+        "depth": round(depth, 3),
+        "roll":  round(attitude.get("roll", 0), 4) if attitude else 0.0,
+        "pitch": round(attitude.get("pitch", 0), 4) if attitude else 0.0,
+        "yaw":   round(attitude.get("yaw", 0), 4) if attitude else 0.0,
+        "speed": round(spd, 3),
+    }
+    with _track_lock:
+        _track.append(point)
+
+
 # ── 航位推算主循环 ────────────────────────────────────────────────────────────
 
 def _dr_loop():
     global _gravity_bias, _gravity_samples, _accel_scale, _accel_scale_samples, _filtered_accel
-    dt       = 1.0 / DR_HZ
-    last_ts  = None          # 上一条 RAW_IMU 的 time_usec，用于对齐实际 dt
+    last_ts     = None        # 上一圈墙钟时刻，用于计算真实 dt
+    imu_pref    = None        # 锁定已成功的 IMU 消息源
+    slow_i      = 0           # 低频遥测计数：AHRS2/EKF 每 5 圈拉一次
+    cache_ahrs2 = None
+    cache_ekf   = None
+    ekf_origin  = None        # 首次/重置时的 EKF 位置基准（ENU）
 
     while True:
         # ── 外部重置 ──────────────────────────────────────────────────────
@@ -295,15 +333,31 @@ def _dr_loop():
             _accel_scale_samples = []
             _filtered_accel = None
             last_ts = None
+            imu_pref = None
+            ekf_origin = None
 
         t0 = time.time()
 
-        # ── 拉取 IMU + 姿态 ───────────────────────────────────────────────
-        imu_msg, imu = _fetch_imu()
+        # ── 真实 dt（替代固定 dt，避免拉取耗时抖动导致积分失真） ───────────
+        now = time.time()
+        first = last_ts is None
+        dt = 1.0 / DR_HZ if first else min(max(now - last_ts, DT_MIN), DT_MAX)
+        last_ts = now
+
+        # ── 拉取：姿态 + IMU（锁定有效源）+ EKF 融合位置（主） ─────────────
         attitude = _fetch("ATTITUDE")
-        ahrs2    = _fetch("AHRS2")
-        ekf      = _fetch("EKF_STATUS_REPORT")
-        accel    = _calibrated_imu_accel(imu) if imu else None
+        imu_msg, imu = _fetch_imu(imu_pref)
+        if imu:
+            imu_pref = imu_msg
+        lpos = _fetch("LOCAL_POSITION_NED")
+        accel = _calibrated_imu_accel(imu) if imu else None
+
+        # ── 低频遥测：AHRS2 / EKF 方差（每 5 圈一次，减少阻塞拉取） ────────
+        slow_i = (slow_i + 1) % 5
+        if first or slow_i == 0:
+            cache_ahrs2 = _fetch("AHRS2")
+            cache_ekf = _fetch("EKF_STATUS_REPORT")
+        ahrs2, ekf = cache_ahrs2, cache_ekf
 
         # ── 更新遥测快照 ──────────────────────────────────────────────────
         telem_update = {"ts": time.time()}
@@ -348,22 +402,47 @@ def _dr_loop():
         with _telem_lock:
             _telem.update(telem_update)
 
-        # ── 航位推算积分 ──────────────────────────────────────────────────
-        if accel and attitude:
+        # ── 位置解算：优先自驾仪 EKF 融合位置，缺失时退回纯 IMU 积分 ──────
+        if lpos is not None:
+            # 主：LOCAL_POSITION_NED（已融合，无 t² 漂移），NED→ENU 并相对重置点输出
+            e  = lpos.get("y", 0.0);  n  = lpos.get("x", 0.0);  u  = -lpos.get("z", 0.0)
+            ve = lpos.get("vy", 0.0); vn = lpos.get("vx", 0.0); vu = -lpos.get("vz", 0.0)
+            if ekf_origin is None:
+                ekf_origin = (e, n, u)
+            x, y, z = e - ekf_origin[0], n - ekf_origin[1], u - ekf_origin[2]
+            spd = math.sqrt(ve * ve + vn * vn + vu * vu)
+            with _dr_lock:
+                px, py, pz = _dr_state["x"], _dr_state["y"], _dr_state["z"]
+                _dr_state.update(x=x, y=y, z=z, vx=ve, vy=vn, vz=vu, drift_warn=False)
+                _dr_state["dist"] += math.sqrt((x - px) ** 2 + (y - py) ** 2 + (z - pz) ** 2)
+                _dr_state["running_time"] += dt
+                dist = _dr_state["dist"]
+                rt = _dr_state["running_time"]
+            with _telem_lock:
+                _telem.update({
+                    "dr_x": round(x, 3), "dr_y": round(y, 3), "dr_z": round(z, 3),
+                    "dr_dist": round(dist, 2), "dr_speed": round(spd, 3),
+                    "dr_time": round(rt, 1), "drift_warn": False, "dr_source": "ekf",
+                })
+            _append_track(x, y, z, attitude, ahrs2, spd, rt)
+
+        elif accel and attitude:
+            # 兜底：纯 IMU 捷联积分（真实 dt + 静止在线零偏重估 + ZUPT），输出 ENU
             roll  = attitude.get("roll",  0)
             pitch = attitude.get("pitch", 0)
             yaw   = attitude.get("yaw",   0)
 
             ax_body, ay_body, az_body = _imu_to_body_accel(accel)
             ax_g, ay_g, az_g = _body_to_world(ax_body, ay_body, az_body, roll, pitch, yaw)
-            ax_linear, ay_linear, az_linear, gravity_ready = _linear_accel_from_gravity_bias(ax_g, ay_g, az_g)
-            ax_w, ay_w, az_w = _filter_linear_accel(ax_linear, ay_linear, az_linear)
+            ax_lin, ay_lin, az_lin, _ready = _linear_accel_from_gravity_bias(ax_g, ay_g, az_g)
+            ax_n, ay_n, az_n = _filter_linear_accel(ax_lin, ay_lin, az_lin)
+            ae, an, au = _ned_world_to_enu(ax_n, ay_n, az_n)   # 世界系 NED→ENU
 
             with _dr_lock:
                 sf = _dr_state["still_frames"]
-                acc_mag = math.sqrt(ax_w**2 + ay_w**2 + az_w**2)
+                acc_mag = math.sqrt(ae * ae + an * an + au * au)
 
-                # 静止检测：若加速度持续很小，将速度归零（抑制漂移）
+                # 静止检测：加速度持续很小则计为静止
                 if acc_mag < STILL_THRESH:
                     sf += 1
                 else:
@@ -373,42 +452,44 @@ def _dr_loop():
                     _dr_state["vx"] = 0.0
                     _dr_state["vy"] = 0.0
                     _dr_state["vz"] = 0.0
+                    # 静止窗口是免费的在线标定：缓慢把重力/零偏基线拉向当前静止读数
+                    if _gravity_bias is not None:
+                        a = STILL_BIAS_ALPHA
+                        _gravity_bias = (
+                            _gravity_bias[0] + a * (ax_g - _gravity_bias[0]),
+                            _gravity_bias[1] + a * (ay_g - _gravity_bias[1]),
+                            _gravity_bias[2] + a * (az_g - _gravity_bias[2]),
+                        )
 
                 _dr_state["still_frames"] = sf
 
-                # 速度积分
-                _dr_state["vx"] += ax_w * dt
-                _dr_state["vy"] += ay_w * dt
-                _dr_state["vz"] += az_w * dt
-
-                # 位置积分
+                # 速度 / 位置积分（真实 dt）
+                _dr_state["vx"] += ae * dt
+                _dr_state["vy"] += an * dt
+                _dr_state["vz"] += au * dt
                 dx = _dr_state["vx"] * dt
                 dy = _dr_state["vy"] * dt
                 dz = _dr_state["vz"] * dt
                 _dr_state["x"] += dx
                 _dr_state["y"] += dy
                 _dr_state["z"] += dz
-                _dr_state["dist"] += math.sqrt(dx**2 + dy**2 + dz**2)
+                _dr_state["dist"] += math.sqrt(dx ** 2 + dy ** 2 + dz ** 2)
                 _dr_state["running_time"] += dt
-
-                # 漂移警告：积分超过 60 秒后提示
                 _dr_state["drift_warn"] = _dr_state["running_time"] > 60
 
                 x, y, z = _dr_state["x"], _dr_state["y"], _dr_state["z"]
-                dist     = _dr_state["dist"]
-                dw       = _dr_state["drift_warn"]
-                spd      = math.sqrt(_dr_state["vx"]**2 + _dr_state["vy"]**2 + _dr_state["vz"]**2)
+                dist = _dr_state["dist"]
+                dw   = _dr_state["drift_warn"]
+                rt   = _dr_state["running_time"]
+                spd  = math.sqrt(_dr_state["vx"]**2 + _dr_state["vy"]**2 + _dr_state["vz"]**2)
 
-            # 写入遥测快照（供前端实时读）
             with _telem_lock:
                 _telem.update({
                     "dr_x": round(x, 3), "dr_y": round(y, 3), "dr_z": round(z, 3),
-                    "dr_dist": round(dist, 2),
-                    "dr_speed": round(spd, 3),
-                    "dr_time":  round(_dr_state["running_time"], 1),
-                    "drift_warn": dw,
-                    "ax_w": round(ax_w, 4), "ay_w": round(ay_w, 4), "az_w": round(az_w, 4),
-                    "ax_w_raw": round(ax_linear, 4), "ay_w_raw": round(ay_linear, 4), "az_w_raw": round(az_linear, 4),
+                    "dr_dist": round(dist, 2), "dr_speed": round(spd, 3),
+                    "dr_time": round(rt, 1), "drift_warn": dw, "dr_source": "imu",
+                    "ax_w": round(ae, 4), "ay_w": round(an, 4), "az_w": round(au, 4),
+                    "ax_w_raw": round(ax_lin, 4), "ay_w_raw": round(ay_lin, 4), "az_w_raw": round(az_lin, 4),
                     "ax_g": round(ax_g, 4), "ay_g": round(ay_g, 4), "az_g": round(az_g, 4),
                     "accel_filter_alpha": ACCEL_FILTER_ALPHA,
                     "accel_jump_limit": ACCEL_JUMP_LIMIT,
@@ -416,23 +497,7 @@ def _dr_loop():
                     "gravity_cal_samples": len(_gravity_samples),
                     "gravity_bias": [round(v, 4) for v in _gravity_bias] if _gravity_bias else None,
                 })
-
-            # 记录轨迹点（每次积分都记，降采样到 DR_HZ/2）
-            if int(_dr_state["running_time"] * DR_HZ) % 2 == 0:
-                depth = ahrs2.get("altitude", 0) if ahrs2 else 0.0
-                point = {
-                    "ts":    time.time(),
-                    "x":     round(x, 3),
-                    "y":     round(y, 3),
-                    "z":     round(z, 3),
-                    "depth": round(depth, 3),
-                    "roll":  round(roll, 4),
-                    "pitch": round(pitch, 4),
-                    "yaw":   round(yaw, 4),
-                    "speed": round(spd, 3),
-                }
-                with _track_lock:
-                    _track.append(point)
+            _append_track(x, y, z, attitude, ahrs2, spd, rt)
 
         # ── 保持频率 ──────────────────────────────────────────────────────
         elapsed = time.time() - t0
