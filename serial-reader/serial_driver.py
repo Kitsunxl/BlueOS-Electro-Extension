@@ -17,6 +17,8 @@ MAX_HISTORY = 8000
 DEFAULT_PORT = "/dev/ttyAMA0"
 #DEFAULT_PORT = "/dev/serial1"
 DEFAULT_BAUD = 115200
+READ_TIMEOUT = 0.05
+PARTIAL_FLUSH_SEC = 0.12
 
 
 class SerialDriver:
@@ -36,6 +38,7 @@ class SerialDriver:
         self.total_bytes: int = 0
         self.total_lines: int = 0
         self.start_time: float = time.time()
+        self.last_rx_time: Optional[float] = None
 
     # ── 公开接口 ──────────────────────────────────────────────────────────────
 
@@ -59,20 +62,23 @@ class SerialDriver:
             "total_bytes": self.total_bytes,
             "uptime":      round(time.time() - self.start_time, 1),
             "history_size": history_size,
+            "last_rx_age":  round(time.time() - self.last_rx_time, 3) if self.last_rx_time else None,
         }
 
     def get_history_since(self, since_index: int, limit: int = 2000) -> list:
-        # Snapshot under lock to avoid concurrent mutation while copying.
+        limit = max(1, min(int(limit), 5000))
         with self._history_lock:
             snapshot = list(self.history)
 
         if since_index <= 0:
             return snapshot[-limit:] if len(snapshot) > limit else snapshot
 
-        result = [entry for entry in snapshot if entry["index"] > since_index]
-        if len(result) > limit:
-            return result[:limit]
-        return result
+        if not snapshot or since_index >= snapshot[-1]["index"]:
+            return []
+
+        first_index = snapshot[0]["index"]
+        start = max(0, since_index - first_index + 1)
+        return snapshot[start:start + limit]
 
     def get_all_history(self) -> list:
         with self._history_lock:
@@ -112,6 +118,7 @@ class SerialDriver:
             self.history.clear()
         self.total_lines = 0
         self.total_bytes = 0
+        self.last_rx_time = None
         logger.info("History cleared")
 
     def list_ports(self) -> list:
@@ -144,8 +151,10 @@ class SerialDriver:
                     self._serial = serial.Serial(
                         port=self.port,
                         baudrate=self.baud,
-                        timeout=1.0,
+                        timeout=READ_TIMEOUT,
+                        inter_byte_timeout=READ_TIMEOUT,
                     )
+                    self._serial.reset_input_buffer()
                 self.connected = True
                 self.error = None
                 logger.info(f"Opened {self.port} @ {self.baud}")
@@ -158,27 +167,35 @@ class SerialDriver:
 
             # 读取循环
             try:
+                pending = bytearray()
+                partial_since = None
                 while self.enabled:
-                    raw_bytes = self._serial.readline()
+                    waiting = self._serial.in_waiting
+                    raw_bytes = self._serial.read(waiting or 1)
                     if not raw_bytes:
+                        if pending and partial_since and time.time() - partial_since >= PARTIAL_FLUSH_SEC:
+                            self._append_line(bytes(pending))
+                            pending.clear()
+                            partial_since = None
                         continue
 
                     self.total_bytes += len(raw_bytes)
+                    self.last_rx_time = time.time()
+                    pending.extend(raw_bytes)
+                    if partial_since is None:
+                        partial_since = self.last_rx_time
 
-                    try:
-                        text = raw_bytes.decode("utf-8", errors="replace").strip()
-                    except Exception:
-                        text = repr(raw_bytes)
-
-                    if text:
-                        self.total_lines += 1
-                        entry = {
-                            "index":     self.total_lines,
-                            "timestamp": datetime.now().strftime("%H:%M:%S.%f")[:12],
-                            "raw":       text,
-                        }
-                        with self._history_lock:
-                            self.history.append(entry)
+                    while True:
+                        newline_positions = [p for p in (pending.find(b"\n"), pending.find(b"\r")) if p >= 0]
+                        if not newline_positions:
+                            break
+                        cut = min(newline_positions)
+                        line = bytes(pending[:cut])
+                        del pending[:cut + 1]
+                        while pending[:1] in (b"\n", b"\r"):
+                            del pending[:1]
+                        self._append_line(line)
+                        partial_since = time.time() if pending else None
 
             except Exception as e:
                 self.connected = False
@@ -186,3 +203,21 @@ class SerialDriver:
                 logger.error(f"Serial read error: {e}")
                 self._close()
                 time.sleep(3)
+
+    def _append_line(self, raw_bytes: bytes):
+        try:
+            text = raw_bytes.decode("utf-8", errors="replace").strip()
+        except Exception:
+            text = repr(raw_bytes)
+
+        if not text:
+            return
+
+        self.total_lines += 1
+        entry = {
+            "index":     self.total_lines,
+            "timestamp": datetime.now().strftime("%H:%M:%S.%f")[:12],
+            "raw":       text,
+        }
+        with self._history_lock:
+            self.history.append(entry)

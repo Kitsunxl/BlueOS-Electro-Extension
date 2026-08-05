@@ -69,7 +69,11 @@ def _fetch(msg: str):
     global _active_mavlink_base
     last_error = "no MAVLink2REST base URL configured"
     last_base = ""
-    for base in MAVLINK_BASES:
+    bases = []
+    if _active_mavlink_base:
+        bases.append(_active_mavlink_base)
+    bases.extend(base for base in MAVLINK_BASES if base not in bases)
+    for base in bases:
         last_base = base
         try:
             raw = blueos_request(f"{base}/{msg}")
